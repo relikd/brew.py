@@ -29,7 +29,7 @@ from argparse import (
     _MutuallyExclusiveGroup as ArgsXorGroup,
 )
 from typing import (
-    Any, Callable, Iterable, Iterator, NamedTuple, Optional, Pattern, TypedDict
+    Any, Callable, Iterable, Iterator, NamedTuple, Optional, Pattern, TypedDict, TypeVar
 )
 
 
@@ -843,6 +843,27 @@ class Arch:
         major, minor, *_ = platform.mac_ver()[0].split('.')
         return ('10.' + minor) if major == '10' else major
 
+    _SOFTWARE_VERSIONS = {}  # type: dict[str, list[int]]
+
+    @staticmethod
+    def getClangBuildVersion() -> list[int]:
+        return Arch._SOFTWARE_VERSIONS.get('clang') or \
+            Arch._SOFTWARE_VERSIONS.setdefault('clang', Bash.getVersion(
+                ['clang', '--version'], r'clang-([\d.]+)'))
+
+    @staticmethod
+    def getGccVersion() -> list[int]:
+        return Arch._SOFTWARE_VERSIONS.get('gcc') or \
+            Arch._SOFTWARE_VERSIONS.setdefault('gcc', Bash.getVersion(
+                ['gcc', '-v'], r'gcc version ([\d.]+)'))
+
+    @staticmethod
+    def hasXcodeVer(version: str) -> bool:
+        currentVer = Arch._SOFTWARE_VERSIONS.get('xcode') or \
+            Arch._SOFTWARE_VERSIONS.setdefault('xcode', Bash.getVersion(
+                ['xcodebuild', '-version'], r'Xcode ([\d.]+)'))
+        return currentVer >= [int(x) for x in version.split('.')]
+
 
 # -----------------------------------
 #  TreeDict
@@ -1477,6 +1498,22 @@ class Utils:
             size /= 1024.0
         return f'{size:.1f}{unit}'
 
+    Version = TypeVar('Version', int, str, list[int])
+
+    @staticmethod
+    def cmpVersion(left: Version, op: str, right: Version) -> bool:
+        if op == '<=':
+            return left <= right
+        if op == '>=':
+            return left >= right
+        if op == '<':
+            return left < right
+        if op == '>':
+            return left > right
+        if op == '==':
+            return left == right
+        raise ArithmeticError(f'unknown op "{op}"')
+
     @staticmethod
     def prettyList(arr: list[str], prefix: str = '  - ') -> str:
         return '\n'.join(prefix + x for x in arr)
@@ -1522,6 +1559,16 @@ class Utils:
 # -----------------------------------
 
 class Bash:
+    @staticmethod
+    def getVersion(cmd: list[str], pattern: str) -> list[int]:
+        try:
+            rv = shell.run(cmd, capture_output=True)
+            if match := re.search(pattern.encode('utf8'), rv.stdout):
+                return [int(x) for x in match.group(1).split(b'.')]
+        except OSError:
+            pass
+        return [0]
+
     @staticmethod
     def otool(fname: str) -> list[str]:
         ''' Read shared library references '''
