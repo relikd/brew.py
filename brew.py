@@ -29,7 +29,7 @@ from argparse import (
     _MutuallyExclusiveGroup as ArgsXorGroup,
 )
 from typing import (
-    Any, Callable, Iterable, Iterator, NamedTuple, Optional, Pattern, TypedDict, TypeVar
+    Any, Callable, Iterable, Iterator, NamedTuple, Optional, TypedDict, TypeVar
 )
 
 
@@ -97,7 +97,7 @@ def cli_info(args: ArgParams) -> None:
                 Log.info('  <not installed>')
             else:
                 localDeps = Cellar.getDependencies(args.package, ver)
-                Log.info(' ', ', '.join(localDeps) if localDeps else '<none>')
+                Log.info(' ', ', '.join(sorted(localDeps)) or '<none>')
 
     Log.info()
     Utils.ask('search online?') or exit(0)
@@ -1324,21 +1324,10 @@ class Cellar:
     # Ruby file processing
 
     @staticmethod
-    def grepFormula(pkg: str, version: str, pattern: Pattern) \
-            -> 'list[str]|None':
-        ''' Parse ruby file to extract information '''
-        path = Cellar.rubyPath(pkg, version)
-        if os.path.isfile(path):
-            with open(path, 'r') as fp:
-                return pattern.findall(fp.read())
-        return None
-
-    @staticmethod
-    def getDependencies(pkg: str, version: str) -> 'list[str]|None':
+    def getDependencies(pkg: str, version: str) -> set[str]:
         ''' Extract dependencies from ruby file '''
         assert version, 'version is required'
-        rx = re.compile(r'depends_on\s*"([^"]*)"(?!\s*=>)')  # w/o build deps
-        return Cellar.grepFormula(pkg, version, rx)
+        return RubyParser(Cellar.rubyPath(pkg, version)).parse().dependencies
 
     @staticmethod
     def getHomepageUrl(pkg: str) -> 'str|None':
@@ -1346,17 +1335,13 @@ class Cellar:
         info = Cellar.info(pkg)
         ver = info.verActive or ([None] + info.verAll)[-1]
         if ver:
-            rx = re.compile(r'homepage\s*"([^"]*)"')
-            url = Cellar.grepFormula(pkg, ver, rx)
-            if url:
-                return url[0]
+            return RubyParser(Cellar.rubyPath(pkg, ver)).parseHomepageUrl()
         return None
 
     @staticmethod
     def isKegOnly(pkg: str, version: str) -> bool:
         ''' Check if package is keg-only '''
-        rx = re.compile(r'[\^\n]\s*keg_only\s*')
-        return len(Cellar.grepFormula(pkg, version, rx) or []) > 0
+        return RubyParser(Cellar.rubyPath(pkg, version)).parseKegOnly()
 
 
 # -----------------------------------
@@ -1432,6 +1417,363 @@ class Fixer:
             Log.debug('  codesign')
             Bash.codesign(fname)
             os.utime(fname, (atime, mtime))
+
+
+# -----------------------------------
+#  RubyParser
+# -----------------------------------
+
+class RubyParser:
+    PRINT_PARSE_ERRORS = True
+    ASSERT_KNOWN_SYMBOLS = False
+    IGNORE_RULES = False
+    FAKE_INSTALLED = set()  # type: set[str] # simulate Cellar.info().installed
+
+    IGNORED_TARGETS = set([':optional', ':build', ':test'])
+    TARGET_SYMBOLS = IGNORED_TARGETS.union([':recommended'])
+    # https://rubydoc.brew.sh/MacOSVersion.html#SYMBOLS-constant
+    # MACOS_SYMBOLS = set([':' + x for x in Arch.ALL_OS])
+    # https://rubydoc.brew.sh/RuboCop/Cask/Constants#ON_SYSTEM_METHODS-constant
+    # https://rubydoc.brew.sh/Homebrew/SimulateSystem.html#arch_symbols-class_method
+    # SYSTEM_SYMBOLS = set([':arm,', ':intel', ':arm64', ':x86_64'])
+    # KNOWN_SYMBOLS = MACOS_SYMBOLS | SYSTEM_SYMBOLS | TARGET_SYMBOLS
+
+    def __init__(self, path: str) -> None:
+        self.invalidArch = []  # type: list[str]  # reasons why not supported
+        self.path = path
+        if not os.path.isfile(self.path):
+            raise FileNotFoundError(path)
+
+    def readlines(self) -> Iterator[str]:
+        with open(self.path, 'r') as fp:
+            for line in fp.readlines():
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    yield line
+
+    def parseHomepageUrl(self) -> 'str|None':
+        ''' Extract homepage url '''
+        for line in self.readlines():
+            if line.startswith('homepage '):
+                return line.split('"')[1]
+        return None
+
+    def parseKegOnly(self) -> bool:
+        ''' Check if package is keg-only '''
+        for line in self.readlines():
+            if line == 'keg_only' or line.startswith('keg_only '):
+                return True
+        return False
+
+    def parse(self) -> 'RubyParser':
+        ''' Extract depends_on rules (updates `.invalidArch`) '''
+        END = r'\s*(?:#|$)'  # \n or comment
+        STR = r'"([^"]*)"'  # "foo"
+        ACT = r'([^\s:]+:)'  # foo:
+        SYM = r'(:[^\s:]+)'  # :foo
+        ARR = r'\[([^\]]*)\]'  # [foo]
+        TOK = fr'(?:{STR}|{SYM}|{ARR})'  # "str" | :sym | [arr]
+        TGT = fr'(?:\s*=>\s*{TOK})?'  # OPTIONAL: => {TOK}
+        # depends_on
+        DEP = fr'(?:{STR}|{SYM}|{ACT}\s+{TOK})'  # "str" | :sym | act: {TOK}
+        IF = r'(?:\s+if\s+(.*))?'  # OPTIONAL: if MacOS.version >= :catalina
+        # uses_from_macos
+        REQ = fr'(?:,\s+{ACT}\s+{SYM})?'  # OPTIONAL: , act: :sym  (with comma)
+
+        rx_grp = re.compile(fr'^on_([^\s]*)\s*(.*)\s+do{END}')
+        rx_dep = re.compile(fr'^depends_on\s+{DEP}{TGT}{IF}{END}')
+        rx_use = re.compile(fr'^uses_from_macos\s+{STR}{TGT}{REQ}{END}')
+
+        self.dependencies = set()  # type: set[str]
+        context = [True]
+        prev_classes = set()  # type: set[str]
+        for line in self.readlines():
+            if line.startswith('class '):
+                prev_classes.add(line.split()[1])
+
+            if line.startswith('on_'):
+                if match := rx_grp.match(line):
+                    flag = self._parse_block(*match.groups())
+                    context.append(flag)
+                else:
+                    # ignore single outlier cvs.rb
+                    if not line.startswith('on_macos { patches'):
+                        self._err(line)
+
+            elif line == 'end' or line.startswith('end '):
+                if len(context) > 1:
+                    context.pop()
+
+            elif not self.IGNORE_RULES and not all(context):
+                continue
+
+            elif line.startswith('depends_on '):
+                if match := rx_dep.match(line):
+                    if self._parse_depends(*match.groups()):
+                        self.dependencies.add(match.group(1))
+                else:
+                    # glibc seems to be the only formula with weird defs
+                    # https://github.com/Homebrew/homebrew-core/blob/main/Formula/g/glibc%402.17.rb
+                    if line.split()[1] not in prev_classes:
+                        self._err(line)
+
+            elif line.startswith('uses_from_macos '):
+                if match := rx_use.match(line):
+                    if not self._parse_uses(*match.groups()):
+                        self.dependencies.add(match.group(1))
+                else:
+                    self._err(line)
+
+        return self
+
+    ##################################################
+    # Helper methods
+    ##################################################
+
+    def _err(self, *msg: Any) -> None:
+        if self.PRINT_PARSE_ERRORS:
+            Log.warn('ruby parse err //', *msg, '--', self.path)
+
+    def _unify_tok(self, string: str, sym: str, arr: str) -> list[str]:
+        if string:
+            return [string]
+        if sym:
+            return [sym]
+        if arr:
+            return [x.strip().strip('"') for x in arr.split(',')]
+        return []
+
+    def _is_ignored_target(self, args: list[str]) -> bool:
+        ''' Returns `True` if target is :build or :test (unless debugging) '''
+        if self.ASSERT_KNOWN_SYMBOLS:
+            if unkown := set(args) - RubyParser.TARGET_SYMBOLS:
+                self._err('unkown symbol', unkown)
+        if self.IGNORE_RULES:
+            return False
+        for value in args:
+            if value in self.IGNORED_TARGETS:
+                return True
+        return False  # fallback to required
+
+    ##################################################
+    # on_xxx block
+    ##################################################
+
+    def _parse_block(self, block: str, param: str) -> bool:
+        ''' Returns `True` if on_BLOCK matches requirements '''
+        # https://github.com/Homebrew/brew/blob/main/Library/Homebrew/ast_constants.rb#L32
+        # on_macos, on_system, on_linux, on_arm, on_intel, "on_#{os_name}"
+        if block == 'macos':
+            if not param:
+                return Arch.IS_MAC
+        elif block == 'linux':
+            if not param:
+                return not Arch.IS_MAC
+        elif block == 'arm':
+            if not param:
+                return Arch.IS_ARM
+        elif block == 'intel':
+            if not param:
+                return not Arch.IS_ARM
+        elif block == 'arch':
+            return self._eval_on_arch(param)
+        elif block == 'system':
+            if param:
+                return any(self._eval_on_system(x) for x in param.split(','))
+        elif block in Arch.ALL_OS:
+            if not Arch.IS_MAC:
+                return False
+            return self._eval_on_mac_version(block, param)
+        self._err(f'unknown on_{block} with param "{param}"')
+        return True  # fallback to is-a-matching-block
+
+    def _eval_on_arch(self, param: str) -> bool:
+        if param == ':arm':
+            return Arch.IS_ARM
+        if param in ':intel':
+            return not Arch.IS_ARM
+        self._err(f'unknown on_arch param "{param}"')
+        return True  # fallback to is-matching
+
+    def _eval_on_system(self, param: str) -> bool:
+        ''' Returns `True` if current machine matches requirements '''
+        param = param.strip()
+        if param == ':linux':
+            return not Arch.IS_MAC
+
+        if param == ':macos':
+            return Arch.IS_MAC
+
+        if param.startswith('macos: :'):
+            if not Arch.IS_MAC:
+                return False
+            os_name = param.removeprefix('macos: :')
+            if os_name.endswith('_or_older'):
+                if ver := Arch.ALL_OS.get(os_name.removesuffix('_or_older')):
+                    return Arch.OS_VER <= ver
+            elif os_name.endswith('_or_newer'):
+                if ver := Arch.ALL_OS.get(os_name.removesuffix('_or_newer')):
+                    return Arch.OS_VER >= ver
+            elif ver := Arch.ALL_OS.get(os_name):
+                return Arch.OS_VER == ver
+
+        self._err(f'unknown on_system param "{param}"')
+        return True  # fallback to is-matching
+
+    def _eval_on_mac_version(self, macver: str, param: str) -> bool:
+        ''' Returns `True` if current machine matches requirements '''
+        if not param:
+            return Arch.OS_VER == Arch.ALL_OS[macver]
+        if param == ':or_older':
+            return Arch.OS_VER <= Arch.ALL_OS[macver]
+        if param == ':or_newer':
+            return Arch.OS_VER >= Arch.ALL_OS[macver]
+        self._err(f'unknown on_{macver} param "{param}"')
+        return True  # fallback to is-matching
+
+    ##################################################
+    # uses_from_macos
+    ##################################################
+
+    def _parse_uses(
+        self, dep: str, uStr: str, uSym: str, uArr: str, rAct: str, rSym: str,
+    ) -> bool:
+        ''' Returns `True` if requirement is fulfilled. '''
+        # dep [=> :uSym|uArr]? [, rAct: :rSym]?
+        if self._is_ignored_target(self._unify_tok(uStr, uSym, uArr)):
+            return True  # only a :build target
+
+        if not Arch.IS_MAC:
+            return False  # on linux, install
+
+        if not rAct:
+            assert not rSym
+            return True  # no need to install, because it is a Mac
+
+        assert rSym
+        if rAct == 'since:':
+            if os_ver := Arch.ALL_OS.get(rSym.lstrip(':')):
+                return Arch.OS_VER >= os_ver
+        self._err('unknown uses_from_macos', rAct, rSym)
+        return True  # dont install, assuming it should be fine on any Mac
+
+    ##################################################
+    # depends_on
+    ##################################################
+
+    def _parse_depends(
+        self, dep: str, sym: str, act: str,
+        dStr: str, dSym: str, dArr: str,
+        tStr: str, tSym: str, tArr: str, tIf: str,
+    ) -> bool:
+        ''' Returns `True` if dependency is required (needs install). '''
+        # (dep|:sym|act: (dStr|:dSym|dArr))! [=> (tStr|:tSym|tArr)]? [if tIf]?
+        if sym:
+            self._validity_symbol(sym)
+            return False  # no dependency, only a system requirement
+
+        if act:
+            dTok = self._unify_tok(dStr, dSym, dArr)
+            param = dTok.pop(0)
+            if not self._is_ignored_target(dTok):
+                self._validity_action(act, param, dTok)
+            return False  # no dependency, only a system requirement
+
+        if self._is_ignored_target(self._unify_tok(tStr, tSym, tArr)):
+            return False  # only a :build target
+
+        if tIf and not self._eval_depends_if(tIf):
+            return False  # if-clause says "no need to install"
+        return True  # needs install
+
+    def _eval_depends_if(self, clause: str) -> bool:
+        ''' Returns `True` if if-clause evaluates to True '''
+        if clause.startswith('MacOS.version '):
+            if not Arch.IS_MAC:
+                return False
+            what, op, os_name = clause.split()
+            if os_ver := Arch.ALL_OS.get(os_name.lstrip(':')):
+                return Utils.cmpVersion(Arch.OS_VER, op, os_ver)
+
+        elif clause.startswith('Formula["') and \
+                clause.endswith('"].any_version_installed?'):
+            pkg = clause.split('"')[1]
+            return Cellar.info(pkg).installed or pkg in self.FAKE_INSTALLED
+
+        elif clause.startswith('build.with? "'):
+            pkg = clause.split('"')[1]
+            # technically not correct, dependency could appear after this rule
+            return pkg in self.dependencies
+
+        elif clause.startswith('build.without? "'):
+            pkg = clause.split('"')[1]
+            # technically not correct, dependency could appear after this rule
+            return pkg not in self.dependencies
+
+        elif match := re.match(r'^(.+)\s+([<=>]+)\s+([0-9.]+)$', clause):
+            what, op, ver = match.groups()
+            ver = [int(x) for x in ver.split('.')]
+            if what == 'DevelopmentTools.clang_build_version':
+                return Utils.cmpVersion(Arch.getClangBuildVersion(), op, ver)
+            if what.startswith('DevelopmentTools.gcc_version'):
+                return Utils.cmpVersion(Arch.getGccVersion(), op, ver)
+
+        self._err('unhandled depends_on if-clause', clause)
+        return True  # in case of doubt, install
+
+    ##################################################
+    # Check system architecture
+    ##################################################
+
+    def _validArch(self, check: bool, desc: str) -> None:
+        if not check:
+            self.invalidArch.append(desc)
+
+    def _validity_symbol(self, sym: str) -> None:
+        ''' Check if symbol corresponds to current system architecture '''
+        if sym == ':linux':
+            self._validArch(not Arch.IS_MAC, 'Linux only')
+        elif sym == ':macos':
+            self._validArch(Arch.IS_MAC, 'MacOS only')
+        elif sym == ':xcode':
+            self._validArch(Arch.hasXcodeVer('1'), 'needs Xcode')
+        else:
+            self._err('unknown depends_on symbol', sym)
+
+    def _validity_action(self, act: str, param: str, flags: list[str]) -> None:
+        ''' Check if action is valid on current system architecture '''
+        # https://github.com/Homebrew/brew/blob/main/Library/Homebrew/dependency_collector.rb#L161
+        # arch:, macos:, maximum_macos:, xcode:
+        # not supported (yet): linux:, codesign:
+        if act == 'arch:':
+            assert not flags
+            if param == ':x86_64':
+                self._validArch(not Arch.IS_ARM, 'no ARM support')
+            elif param == ':arm64':
+                self._validArch(Arch.IS_ARM, 'ARM only')
+            else:
+                self._err('unknown depends_on arch:', param)
+
+        elif act in ['macos:', 'maximum_macos:']:
+            if os_ver := Arch.ALL_OS.get(param.lstrip(':')):
+                op = '<=' if act == 'maximum_macos:' else '>='
+                if Arch.IS_MAC:
+                    self._validArch(Utils.cmpVersion(Arch.OS_VER, op, os_ver),
+                                    f'needs macOS {op} {os_ver}')
+                else:
+                    self._validArch(False, f'needs macOS {op} {os_ver}')
+            else:
+                self._err('unknown depends_on', act, param)
+
+        elif act == 'xcode:':
+            ver = param
+            if ver.startswith(':'):  # probably some ":build"
+                self._validArch(Arch.hasXcodeVer('1'), 'needs Xcode')
+            else:
+                self._validArch(Arch.hasXcodeVer(ver), f'needs Xcode >= {ver}')
+
+        else:
+            self._err('unknown depends_on action', act, param, flags)
 
 
 # -----------------------------------
