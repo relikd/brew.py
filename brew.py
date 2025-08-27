@@ -45,7 +45,7 @@ class Env:
 def main() -> None:
     Cellar.init()
     args = parseArgs()
-    Log.LEVEL -= args.quiet
+    Log.LEVEL = 3 if args.verbose else Log.LEVEL - args.quiet
     Arch.detect(args)
     args.func(args)
     return
@@ -419,6 +419,14 @@ def cli_uninstall(args: ArgParams) -> None:
         ignored.update(xx)
         remaining.difference_update(xx)
 
+    # remove any not-installed packages
+    remaining = remaining.difference(depTree.forward.missing(remaining))
+    needsUninstall = sorted(remaining)
+
+    # if not dry-run, show potential changes
+    for pkg in [] if args.dry_run else needsUninstall:
+        Log.main(f'==> will remove {pkg}.')
+
     # soft-fail check. warning for any doubly used dependencies
     for pkg in sorted(ignored):
         if args.leaves:
@@ -428,33 +436,38 @@ def cli_uninstall(args: ArgParams) -> None:
         Log.warn(f'skip {pkg}. used by:',
                  ', '.join(deps.difference(args.ignore)))
 
-    # remove any not-installed packages
-    remaining = remaining.difference(depTree.forward.missing(remaining))
-
     # if not dry-run, show potential changes and ask user to continue
-    if not args.dry_run:
-        for pkg in sorted(remaining):
-            Log.main(f'==> will remove {pkg}.')
-
-        if not Utils.ask('Do you want to continue?', 'n'):
-            Log.info('abort.')
-            return
+    if not args.dry_run and not Utils.ask('Do you want to continue?', 'n'):
+        Log.info('abort.')
+        return
 
     # delete links
-    Log.main('==> Remove symlinks for', len(remaining), 'packages')
-    for pkg in sorted(remaining):
-        Cellar.unlinkPackage(pkg, onlyExe=False, dryRun=args.dry_run)
+    Log.info('==> Remove symlinks for', len(needsUninstall), 'packages')
+    count = 0
+    for pkg in needsUninstall:
+        count += len(Cellar.unlinkPackage(
+            pkg, dryRun=args.dry_run, quiet=args.dry_run and Log.LEVEL <= 2))
+    Log.main('Would remove' if args.dry_run else 'Removed', count, 'symlinks')
 
     # delete packages and links
-    Log.main('==> Uninstall packages')
+    Log.info('==> Uninstall', len(needsUninstall), 'packages')
     total_savings = 0
-    for pkg in sorted(remaining):
+    for pkg in needsUninstall:
         path = Cellar.installPath(pkg)
         total_savings += File.remove(path, args.dry_run)
 
-    Log.main('==> This operation {} approximately {} of disk space.'.format(
+    Log.info('==> This operation {} approximately {} of disk space.'.format(
         'would free' if args.dry_run else 'has freed',
         Utils.humanSize(total_savings)))
+
+    if args.dry_run:
+        print()
+        print('The following packages will be removed:')
+        Utils.printInColumns(needsUninstall)
+        if ignored:
+            print()
+            print('The following packages will NOT be removed:')
+            Utils.printInColumns(sorted(ignored))
 
 
 # https://docs.brew.sh/Manpage#link-ln-options-installed_formula-
@@ -539,9 +552,8 @@ def cli_switch(args: ArgParams) -> None:
         return
 
     noBinsLinks = not Cellar.getBinLinks(args.package)
-    Cellar.unlinkPackage(args.package, onlyExe=False, dryRun=False)
-    Cellar.linkPackage(
-        args.package, args.version, noExe=noBinsLinks, dryRun=False)
+    Cellar.unlinkPackage(args.package, onlyExe=False)
+    Cellar.linkPackage(args.package, args.version, noExe=noBinsLinks)
     Log.main('==> switched to version', args.version)
     if noBinsLinks:
         Log.warn('no binary links found. Skipped for new version as well.')
@@ -600,8 +612,9 @@ def cli_cleanup(args: ArgParams) -> None:
 
 def parseArgs() -> ArgParams:
     cli = Cli(description=__doc__)
+    cli.arg_bool('-v', '--verbose', help='increase verbosity')
     cli.arg('-q', '--quiet', action='count', default=0, help='''
-        reduce verbosity (-q or -qq)''')
+        reduce verbosity (-q up to -qqq)''')
     cli.arg('--version', action='version', version='%(prog)s 0.9 beta')
 
     # info
@@ -1220,8 +1233,8 @@ class Cellar:
                      summary=True)
         else:
             withBin = Env.LINK_BINARIES if linkExe is None else linkExe
-            Cellar.unlinkPackage(pkg, onlyExe=False, dryRun=False)
-            Cellar.linkPackage(pkg, version, noExe=not withBin, dryRun=False)
+            Cellar.unlinkPackage(pkg)
+            Cellar.linkPackage(pkg, version, noExe=not withBin)
         return True
 
     class DependencyTree(NamedTuple):
@@ -1276,15 +1289,18 @@ class Cellar:
         return rv
 
     @staticmethod
-    def unlinkPackage(pkg: str, *, onlyExe: bool, dryRun: bool) \
-            -> list[LinkTarget]:
+    def unlinkPackage(
+        pkg: str, *,
+        onlyExe: bool = False, dryRun: bool = False, quiet: bool = False,
+    ) -> list[LinkTarget]:
         ''' remove symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
         rv = Cellar.getBinLinks(pkg)
         if not onlyExe:
             rv += filter(None, [Cellar.getOptLink(pkg, ensurePkg=False)])
         for lnk in rv:
             shortPath = os.path.relpath(lnk.path, Cellar.ROOT)
-            Log.info(f'  unlink {shortPath} -> {lnk.raw}')
+            if not quiet:
+                Log.info(f'  unlink {shortPath} -> {lnk.raw}')
             if not dryRun:
                 os.remove(lnk.path)
         return rv
@@ -1298,8 +1314,9 @@ class Cellar:
         return []
 
     @staticmethod
-    def linkPackage(pkg: str, version: str, *, noExe: bool, dryRun: bool) \
-            -> None:
+    def linkPackage(
+        pkg: str, version: str, *, noExe: bool = False, dryRun: bool = False
+    ) -> None:
         ''' create symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
         assert version, 'version is required'
         pkgRoot = Cellar.installPath(pkg, version)
