@@ -36,7 +36,7 @@ from typing import (
 class Env:
     IS_TTY = sys.stdout.isatty()
     MAX_AGE_CACHE = 5 * 24 * 60 * 60  # 5 days
-    MAX_AGE_DOWNLOAD = int(os.environ.get('BREW_PY_CLEANUP_MAX_AGE_DAYS', 120))
+    MAX_AGE_DOWNLOAD = int(os.environ.get('BREW_PY_CLEANUP_MAX_AGE_DAYS', 21))
     CELLAR_PATH = os.environ.get('BREW_PY_CELLAR', '').rstrip('/')
     LINK_BINARIES = os.environ.get('BREW_PY_LINK_BINARIES', '1').lower() in (
         'true', '1', 'yes', 'y', 'on')
@@ -415,9 +415,9 @@ def cli_uninstall(args: ArgParams) -> None:
         remaining = uninstallAll.difference(ignored)
 
     # recursively ignore dependencies that rely on already ignored dependencies
-    while dd := depTree.reverse.filter(remaining, lambda x: x & ignored):
-        ignored.update(dd)
-        remaining.difference_update(dd)
+    while xx := depTree.reverse.filter(remaining, lambda x: x & ignored):
+        ignored.update(xx)
+        remaining.difference_update(xx)
 
     # soft-fail check. warning for any doubly used dependencies
     for pkg in sorted(ignored):
@@ -552,7 +552,7 @@ def cli_cleanup(args: ArgParams) -> None:
     '''
     Remove old versions of installed packages.
     If arguments are specified, only do this for the given packages.
-    Removes all downloads more than 120 days old.
+    Removes all downloads more than 21 days old.
     This can be adjusted with $BREW_PY_CLEANUP_MAX_AGE_DAYS.
     '''
     total_savings = 0
@@ -655,7 +655,8 @@ def parseArgs() -> ArgParams:
     cmd.arg('-depth', type=int, help='Limit tree to N levels (only --tree)')
     grp = cmd.xor_group()
     grp.arg_bool('--tree', help='Print dependencies as structured tree')
-    grp.arg_bool('--dot', help='Text-based graph description in DOT format')
+    grp.arg_bool('--dot', help='''
+        Text-based graph description in DOT format (pipe to "|pbcopy")''')
     grp.arg_bool('--leaves', help='''
         Show only dependencies with no subdependencies''')
 
@@ -667,7 +668,8 @@ def parseArgs() -> ArgParams:
         Only list packages that are not currently installed''')
     grp = cmd.xor_group()
     grp.arg_bool('--tree', help='Print dependencies as structured tree')
-    grp.arg_bool('--dot', help='Text-based graph description in DOT format')
+    grp.arg_bool('--dot', help='''
+        Text-based graph description in DOT format (pipe to "|pbcopy")''')
     grp.arg_bool('--leaves', help='Show only top-most uses, no intermediates')
 
     # leaves
@@ -799,10 +801,12 @@ class Cli(ArgumentParser, CliQuickArg):
 class Arch:
     BREW = ''
     GHCR = ''
+
+    IS_MAC = True  # no support for linux (yet?)
     IS_ARM = False
     OS_VER = '0'
     OS_NAME = 'xxx'
-    _ALL = {
+    ALL_OS = {
         'yosemite': '10.10',
         'el_capitan': '10.11',
         'sierra': '10.12',
@@ -821,7 +825,7 @@ class Arch:
     def detect(args: ArgParams) -> None:
         Arch.IS_ARM = platform.machine() == 'arm64'
         Arch.OS_VER = Arch.macOSVersion()
-        Arch.OS_NAME = {v: k for k, v in Arch._ALL.items()}[Arch.OS_VER]
+        Arch.OS_NAME = {v: k for k, v in Arch.ALL_OS.items()}[Arch.OS_VER]
         if hasattr(args, 'arch') and args.arch:
             Arch.BREW = args.arch
             Arch.GHCR = args.arch
@@ -830,8 +834,9 @@ class Arch:
             prefix = 'arm64_' if Arch.IS_ARM else ''  # arm64_tahoe OR tahoe
             Arch.BREW = prefix + Arch.OS_NAME
         if not Arch.GHCR:
-            prefix = 'arm64' if Arch.IS_ARM else 'amd64'
-            Arch.GHCR = f'{prefix}|darwin|macOS {Arch.OS_VER}'
+            cpu = 'arm64' if Arch.IS_ARM else 'amd64'
+            os_type = 'darwin' if Arch.IS_MAC else 'linux'
+            Arch.GHCR = f'{cpu}|{os_type}|macOS {Arch.OS_VER}'
 
     @staticmethod
     def macOSVersion() -> str:
@@ -918,10 +923,11 @@ class TreeDict:
             subdeps = self.direct.get(key, set())
             if not subdeps:
                 continue
-            # sort by name but first entries without dependencies
+            # prefer entries without dependencies -- then sort by name
             order = sorted((bool(self.direct.get(x)), x) for x in subdeps)
-            # OR: sort by name only:  sorted(subdeps)
             new_items = [(lvl + [True], pkg) for (_, pkg) in order]
+            # OR: sort by name only:
+            # new_items = [(lvl + [True], x) for x in sorted(subdeps)]
             new_items[-1][0][-1] = False  # only last item has "no more"
             queue = new_items + queue
 

@@ -80,8 +80,8 @@ positional arguments:
     switch              Change package version.
     cleanup             Remove old versions of installed packages. If
                         arguments are specified, only do this for the given
-                        packages. Removes all downloads more than 120 days
-                        old. This can be adjusted with
+                        packages. Removes all downloads more than 21 days old.
+                        This can be adjusted with
                         $BREW_PY_CLEANUP_MAX_AGE_DAYS.
 
 optional arguments:
