@@ -1415,7 +1415,8 @@ class Fixer:
             elif oldRef.startswith('@@HOMEBREW_PREFIX@@'):
                 newRef = os.path.relpath(oldRef, repl2)
             elif oldRef.startswith('@'):
-                Log.warn('unhandled dylib link', oldRef)
+                Log.debug('unhandled dylib link', oldRef)
+                continue
             else:
                 continue  # probably fine
 
