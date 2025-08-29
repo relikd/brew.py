@@ -126,8 +126,8 @@ def cli_info(args: ArgParams) -> None:
     if mode == 'Brew':
         Log.info('GHCR:')
         Log.info(' Tags:')
-        Utils.printInColumns(sorted(Brew.ghcrTags(args.package, force=True)),
-                             prefix='  ', sep='  |  ')
+        tags = Brew.ghcrTags(args.package, force=True)
+        Utils.printInColumns(sorted(tags), prefix='  ', sep='  |  ')
 
 
 # https://docs.brew.sh/Manpage#home-homepage---formula---cask-formulacask-
@@ -285,7 +285,7 @@ def cli_missing(args: ArgParams) -> None:
         return
 
     if args.packages:
-        installed = depTree.forward.unionAll(args.packages)
+        installed = depTree.forward.unionAll(args.packages, inclInput=False)
     else:
         installed = set(depTree.reverse)
 
@@ -883,6 +883,8 @@ class Arch:
 # -----------------------------------
 
 class TreeDict:
+    Keys = TypeVar('Keys', set[str], list[str])
+
     def __init__(self) -> None:
         self.direct = {}  # type: dict[str, set[str]]
         self._leaves = {}  # type: dict[str, set[str]]
@@ -921,18 +923,19 @@ class TreeDict:
             self._all[key] = rv  # assign after recursive call finished
             return self._all[key]
 
-    def unionAll(self, keys: Iterable[str]) -> set[str]:
+    def unionAll(self, keys: Keys, *, inclInput: bool) -> set[str]:
         ''' Retrieve and join all values for all keys '''
-        return set(x for key in keys for x in self.getAll(key))
+        rv = set(x for key in keys for x in self.getAll(key))
+        return rv.union(keys) if inclInput else rv
 
     def filter(self, keys: Iterable[str], fn: Callable[[set[str]], Any]) \
             -> set[str]:
         ''' Filter keys based on `fn(x)` where `x` is `.direct[x]` '''
         return set(key for key in keys if fn(self.direct.get(key) or set()))
 
-    def missing(self, keys: Iterable[str]) -> list[str]:
+    def missing(self, keys: Keys) -> Keys:
         ''' List of keys which are not present in `.direct` (keeps order) '''
-        return [key for key in keys if self.direct.get(key) is None]
+        return type(keys)(key for key in keys if self.direct.get(key) is None)
 
     def directEnd(self) -> list[str]:
         ''' List of keys with with direct dead-ends '''
@@ -965,11 +968,11 @@ class TreeDict:
             new_items[-1][0][-1] = False  # only last item has "no more"
             queue = new_items + queue
 
-    def dotGraph(self, keys: list[str], *, reverse: bool = False) -> None:
+    def dotGraph(self, keys: Keys, *, reverse: bool = False) -> None:
         print('digraph G {')
         print('{rank=same;', ', '.join(f'"{x}"' for x in sorted(keys)),
               '[shape=box, style=dashed];}')
-        for key in sorted(self.unionAll(keys).union(keys)):
+        for key in sorted(self.unionAll(keys, inclInput=True)):
             for dep in sorted(self.direct.get(key, [])):
                 if reverse:
                     print(f'"{dep}" -> "{key}";')
