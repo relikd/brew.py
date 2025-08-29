@@ -208,7 +208,7 @@ def cli_list(args: ArgParams) -> None:
 def cli_deps(args: ArgParams) -> None:
     ''' Show dependencies for package. '''
     depTree = Cellar.getDependencyTree()
-    depTree.forward.assertInstalled(args.packages)
+    depTree.forward.assertExist(args.packages)
 
     choice = args.packages or sorted(depTree.forward)
 
@@ -225,7 +225,7 @@ def cli_deps(args: ArgParams) -> None:
 def cli_uses(args: ArgParams) -> None:
     ''' Show dependents of package (reverse dependencies). '''
     depTree = Cellar.getDependencyTree()
-    depTree.reverse.assertInstalled(args.packages)
+    depTree.reverse.assertExist(args.packages)
 
     if args.missing:
         choice = sorted(set(depTree.reverse).difference(depTree.forward))
@@ -262,7 +262,7 @@ def cli_missing(args: ArgParams) -> None:
     Will exit with a non-zero status if any are found to be missing.
     '''
     depTree = Cellar.getDependencyTree()
-    depTree.reverse.assertInstalled(args.packages)
+    depTree.reverse.assertExist(args.packages)
 
     if args.packages:
         installed = depTree.forward.unionAll(args.packages, inclInput=False)
@@ -357,7 +357,7 @@ def cli_install(args: ArgParams) -> None:
 def cli_uninstall(args: ArgParams) -> None:
     ''' Remove / uninstall a package. '''
     depTree = Cellar.getDependencyTree()
-    depTree.forward.assertInstalled(args.packages + args.ignore)
+    depTree.forward.assertExist(args.packages + args.ignore)
 
     recipe = depTree.collectUninstall(
         args.packages, args.ignore, ignoreDependencies=args.no_dependencies)
@@ -902,10 +902,10 @@ class TreeDict:
         ''' List of keys with with direct dead-ends '''
         return [key for key, deps in self.direct.items() if not deps]
 
-    def assertInstalled(self, keys: Keys) -> None:
+    def assertExist(self, keys: Keys, msg: str = 'unknown package:') -> None:
         ''' Print any `.missing(keys)` and exit with status code 1 '''
         if unknownKeys := self.missing(keys):
-            Log.error('unknown package:', ', '.join(unknownKeys))
+            Log.error(msg, ', '.join(unknownKeys))
             exit(1)
 
     def printFlat(
