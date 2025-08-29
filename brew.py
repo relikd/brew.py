@@ -223,7 +223,7 @@ def cli_deps(args: ArgParams) -> None:
             if args.leaves:
                 flat = depTree.forward.getLeaves(pkg)
             elif args.depth == 1:
-                flat = depTree.reverse.direct[pkg]
+                flat = depTree.forward.direct[pkg]
             else:
                 flat = depTree.forward.getAll(pkg)
             Log.main(pkg, '=>', ', '.join(sorted(flat)))
