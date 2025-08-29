@@ -879,7 +879,7 @@ class TreeDict:
             self._all[key] = rv  # assign after recursive call finished
             return self._all[key]
 
-    def unionAll(self, keys: Keys, *, inclInput: bool) -> set[str]:
+    def unionAll(self, keys: Keys, *, inclInput: bool = True) -> set[str]:
         ''' Retrieve and join all values for all keys '''
         rv = set(x for key in keys for x in self.getAll(key))
         return rv.union(keys) if inclInput else rv
@@ -953,7 +953,7 @@ class TreeDict:
         print('digraph G {')
         print('{rank=same;', ', '.join(f'"{x}"' for x in sorted(keys)),
               '[shape=box, style=dashed];}')
-        for key in sorted(self.unionAll(keys, inclInput=True)):
+        for key in sorted(self.unionAll(keys)):
             for dep in sorted(self.direct.get(key, [])):
                 if reverse:
                     print(f'"{dep}" -> "{key}";')
@@ -979,9 +979,8 @@ class DependencyTree:
         if not ignore:
             return set()
         # going DOWN the tree, get all dependencies of <ignore>
-        allIgnored = self.forward.unionAll(ignore, inclInput=True)
-        # yes, add ignore then difference because <ignore> can be nested
-        children = allIgnored.difference(ignore)
+        allIgnored = self.forward.unionAll(ignore)
+        children = allIgnored.difference(ignore)  # <ignore> can be nested!
         # going UP the tree and selecting branches not already ignored.
         # => look for children with other parents besides <ignore>
         multiParents = self.reverse.filterDifference(children, allIgnored)
@@ -1015,7 +1014,7 @@ class DependencyTree:
                 set(deletePkgs), set(), warnings(hidden))
 
         # ideally, we uninstall <deletePkgs> and all its dependencies
-        rawUninstall = self.forward.unionAll(deletePkgs, inclInput=True)
+        rawUninstall = self.forward.unionAll(deletePkgs)
 
         # dont consider these, they will be gone (or are actively ignored)
         hidden = activelyIgnored.union(rawUninstall)
