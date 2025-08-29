@@ -228,11 +228,7 @@ def cli_uses(args: ArgParams) -> None:
     depTree.reverse.assertExist(args.packages)
 
     if args.missing:
-        choice = sorted(set(depTree.reverse).difference(depTree.forward))
-        if args.packages:
-            choice = sorted(
-                x for x in choice
-                if depTree.reverse.getAll(x).intersection(args.packages))
+        choice = sorted(depTree.getMissing(args.packages))
     else:
         choice = args.packages
 
@@ -263,18 +259,13 @@ def cli_missing(args: ArgParams) -> None:
     '''
     depTree = Cellar.getDependencyTree()
     depTree.reverse.assertExist(args.packages)
+    missing = depTree.getMissing(args.packages)
 
-    if args.packages:
-        installed = depTree.forward.unionAll(args.packages, inclInput=False)
-    else:
-        installed = set(depTree.reverse)
-
-    missing = sorted(installed.difference(depTree.forward))
     if args.no_dependencies:
         Utils.printInColumns(
-            missing, plainList=not Env.IS_TTY or args.__dict__['1'])
+            sorted(missing), plainList=not Env.IS_TTY or args.__dict__['1'])
     else:
-        for pkg in missing:
+        for pkg in sorted(missing):
             direct = depTree.reverse.direct[pkg]
             leaves = depTree.reverse.getLeaves(pkg)
             Log.main('{} (dependency of: {} ... {})'.format(
@@ -285,7 +276,7 @@ def cli_missing(args: ArgParams) -> None:
             Log.error(f'missing {len(missing)} dependencies')
         exit(1)
     else:
-        Log.info(f'all {len(installed)} dependencies installed')
+        Log.info('all dependencies installed')
 
 
 # https://docs.brew.sh/Manpage#install-options-formulacask-
@@ -985,6 +976,17 @@ class DependencyTree:
         # => look for children with other parents besides <ignore>
         multiParents = self.reverse.filterDifference(children, allIgnored)
         return allIgnored - multiParents
+
+    def getMissing(self, constraint: TreeDict.Keys) -> set[str]:
+        '''
+        List of packages not currently installed
+        (aka. appear in `.reverse` but not in `.forward`).
+        Optionally: filter by `constraint` (any match within full tree).
+        '''
+        if constraint:
+            return self.forward.unionAll(constraint).difference(self.forward)
+        else:
+            return set(self.reverse).difference(self.forward)
 
     class UninstallRecipe(NamedTuple):
         remove: set[str]
