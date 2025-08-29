@@ -365,9 +365,10 @@ def cli_uninstall(args: ArgParams) -> None:
 
     needsUninstall = sorted(recipe.remove)
 
-    # if not dry-run, show potential changes
-    for pkg in [] if args.dry_run else needsUninstall:
-        Log.main(f'==> will remove {pkg}.')
+    # show potential changes
+    if not args.dry_run:
+        for pkg in needsUninstall:
+            Log.main(f'==> will remove {pkg}.')
 
     # soft-fail check. warning for any doubly used dependencies
     for pkg in sorted(recipe.skip):
