@@ -210,21 +210,15 @@ def cli_deps(args: ArgParams) -> None:
     depTree = Cellar.getDependencyTree()
     depTree.forward.assertInstalled(args.packages)
 
+    choice = args.packages or sorted(depTree.forward)
+
     if args.dot:
         depTree.forward.dotGraph(args.packages or depTree.reverse.directEnd())
-        return
-
-    for pkg in args.packages or sorted(depTree.forward):
-        if args.tree:
-            depTree.forward.print(pkg, depth=args.depth)
-        else:
-            if args.leaves:
-                flat = depTree.forward.getLeaves(pkg)
-            elif args.depth == 1:
-                flat = depTree.forward.direct[pkg]
-            else:
-                flat = depTree.forward.getAll(pkg)
-            Log.main(pkg, '=>', ', '.join(sorted(flat)))
+    elif args.tree:
+        depTree.forward.printTree(choice, depth=args.depth)
+    else:
+        depTree.forward.printFlat(
+            choice, ' => ', leaves=args.leaves, direct=args.depth == 1)
 
 
 # https://docs.brew.sh/Manpage#upgrade-options-installed_formulainstalled_cask-
@@ -245,19 +239,11 @@ def cli_uses(args: ArgParams) -> None:
     if args.dot:
         depTree.reverse.dotGraph(
             choice or depTree.forward.directEnd(), reverse=True)
-        return
-
-    for pkg in choice or sorted(depTree.reverse):
-        if args.tree:
-            depTree.reverse.print(pkg, depth=args.depth)
-        else:
-            if args.leaves:
-                flat = depTree.reverse.getLeaves(pkg)
-            elif args.depth == 1:
-                flat = depTree.reverse.direct[pkg]
-            else:
-                flat = depTree.reverse.getAll(pkg)
-            Log.main(pkg, ':=', ', '.join(sorted(flat)))
+    elif args.tree:
+        depTree.reverse.printTree(choice, depth=args.depth)
+    else:
+        depTree.reverse.printFlat(
+            choice, ' := ', leaves=args.leaves, direct=args.depth == 1)
 
 
 # https://docs.brew.sh/Manpage#leaves---installed-on-request---installed-as-dependency
@@ -922,10 +908,24 @@ class TreeDict:
             Log.error('unknown package:', ', '.join(unknownKeys))
             exit(1)
 
-    def print(
-        self, key: str, *, depth: int = 0, indent: int = 2, prefix: str = ''
+    def printFlat(
+        self, keys: Keys, separator: str,
+        *, leaves: bool = False, direct: bool = False,
     ) -> None:
-        queue = [([], key)]  # type: list[tuple[list[bool], str]]
+        ''' format: "{pkg}{sep}{deps}". Priority: leaves, direct, all  '''
+        for pkg in keys:
+            if leaves:
+                flat = self.getLeaves(pkg)
+            elif direct:
+                flat = self.direct[pkg]
+            else:
+                flat = self.getAll(pkg)
+            print(pkg + separator + ', '.join(sorted(flat)))
+
+    def printTree(
+        self, keys: Keys, *, depth: int = 0, indent: int = 2, prefix: str = ''
+    ) -> None:
+        queue = [([], key) for key in keys]  # type:list[tuple[list[bool],str]]
 
         while queue:
             lvl, key = queue.pop(0)
