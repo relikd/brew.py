@@ -208,9 +208,7 @@ def cli_list(args: ArgParams) -> None:
 def cli_deps(args: ArgParams) -> None:
     ''' Show dependencies for package. '''
     depTree = Cellar.getDependencyTree()
-    if wrongPkg := depTree.forward.missing(args.packages):
-        Log.error('unknown package:', ', '.join(wrongPkg))
-        return
+    depTree.forward.assertInstalled(args.packages)
 
     if args.dot:
         depTree.forward.dotGraph(args.packages or depTree.reverse.directEnd())
@@ -233,9 +231,7 @@ def cli_deps(args: ArgParams) -> None:
 def cli_uses(args: ArgParams) -> None:
     ''' Show dependents of package (reverse dependencies). '''
     depTree = Cellar.getDependencyTree()
-    if wrongPkg := depTree.reverse.missing(args.packages):
-        Log.error('unknown package:', ', '.join(wrongPkg))
-        return
+    depTree.reverse.assertInstalled(args.packages)
 
     if args.missing:
         choice = sorted(set(depTree.reverse).difference(depTree.forward))
@@ -280,9 +276,7 @@ def cli_missing(args: ArgParams) -> None:
     Will exit with a non-zero status if any are found to be missing.
     '''
     depTree = Cellar.getDependencyTree()
-    if wrongPkg := depTree.reverse.missing(args.packages):
-        Log.error('unknown package:', ', '.join(wrongPkg))
-        return
+    depTree.reverse.assertInstalled(args.packages)
 
     if args.packages:
         installed = depTree.forward.unionAll(args.packages, inclInput=False)
@@ -377,9 +371,7 @@ def cli_install(args: ArgParams) -> None:
 def cli_uninstall(args: ArgParams) -> None:
     ''' Remove / uninstall a package. '''
     depTree = Cellar.getDependencyTree()
-    if wrongPkg := depTree.forward.missing(args.packages + args.ignore):
-        Log.error('unknown package:', ', '.join(wrongPkg))
-        exit(1)
+    depTree.forward.assertInstalled(args.packages + args.ignore)
 
     recipe = depTree.collectUninstall(
         args.packages, args.ignore, ignoreDependencies=args.no_dependencies)
@@ -923,6 +915,12 @@ class TreeDict:
     def directEnd(self) -> list[str]:
         ''' List of keys with with direct dead-ends '''
         return [key for key, deps in self.direct.items() if not deps]
+
+    def assertInstalled(self, keys: Keys) -> None:
+        ''' Print any `.missing(keys)` and exit with status code 1 '''
+        if unknownKeys := self.missing(keys):
+            Log.error('unknown package:', ', '.join(unknownKeys))
+            exit(1)
 
     def print(
         self, key: str, *, depth: int = 0, indent: int = 2, prefix: str = ''
