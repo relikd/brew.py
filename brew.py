@@ -1550,11 +1550,11 @@ class Fixer:
                 newRef = os.path.relpath(oldRef, repl1)
             elif oldRef.startswith('@@HOMEBREW_PREFIX@@'):
                 newRef = os.path.relpath(oldRef, repl2)
-            elif oldRef.startswith('@'):
-                Log.debug('unhandled dylib link', oldRef)
+            elif oldRef.startswith('@@'):
+                Log.warn('unhandled dylib link', oldRef, summary=True)
                 continue
             else:
-                continue  # probably fine
+                continue  # probably fine (incl. @rpath, @executable_path)
 
             newRef = '@executable_path/' + newRef
             if not did_change:
