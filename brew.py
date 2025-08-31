@@ -1013,6 +1013,8 @@ class Brew:
         Log.debug('[DEBUG] query Brew.sh manifest for', pkg, '...')
         manifest = ApiBrew.manifest(pkg, force=force)
         targets = manifest['bottle']['stable']['files']
+        if arch not in targets and 'all' in targets:
+            arch = 'all'
         return Brew.PackageManifest(
             version=manifest['versions']['stable'],
             digest=targets[arch]['sha256'] if arch in targets else None,
