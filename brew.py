@@ -177,10 +177,9 @@ def cli_fetch(args: ArgParams) -> None:
     Log.info(' tag:', tag)
     Log.info(' digest:', digest)
 
-    path = Brew.download(Brew.Dependency(args.package, tag or digest, digest),
-                         askOverwrite=True)
+    pth = Brew.download(args.package, tag or digest, digest, askOverwrite=True)
     Log.info('==> ', end='')
-    Log.main(path)
+    Log.main(pth)
 
 
 # https://docs.brew.sh/Manpage#list-ls-options-installed_formulainstalled_cask-
@@ -282,66 +281,19 @@ def cli_missing(args: ArgParams) -> None:
 # https://docs.brew.sh/Manpage#install-options-formulacask-
 def cli_install(args: ArgParams) -> None:
     ''' Install a package with all dependencies. '''
-    if os.path.isfile(args.package) and args.package.endswith('.tar.gz'):
-        if args.dry_run:
-            Log.info('==> Would install from tar file ...')
-        else:
-            Log.info('==> Installing from tar file ...')
-            Cellar.install(args.package,
-                           skipLink=args.skip_link, linkExe=args.binaries)
+    local = Cellar.info(args.package)
+    if local.installed and not args.force:
+        Log.info(args.package, 'already installed, checking for newer version')
+        Brew.checkUpdate(args.package)
         return
 
-    elif '/' in args.package:
-        Log.error('package may not contain path-separator')
-        return
-
-    if args.ignore_dependencies:
-        Log.info('==> Ignoring dependencies ...')
-        deps = Brew.gatherDependencies(args.package, recursive=False)
-    else:
-        Log.info('==> Gather dependencies ...')
-        deps = Brew.gatherDependencies(args.package, recursive=True)
-
-    Log.info(Utils.prettyList([x.package for x in deps]))
-
-    infos = [Cellar.info(x.package) for x in deps]
-    # if all are installed, we dont care about which version exactly.
-    # users should run upgrade in that case
-    if not args.force and all(x.installed for x in infos):
-        Log.error(args.package, 'is already installed.')
-        Brew.checkUpdates(deps)
-        return
-
-    # if at least one digest couldn't be determined, we must fail whole queue
-    failed_arch = [x.package for x in deps if not x.digest]
-    if failed_arch:
-        Log.error('missing platform "{}" in: {}'.format(
-            Arch.BREW, ', '.join(failed_arch)))
-        return
-
-    # skip if a specific version already exists
-    needs_download = [dep for dep, info in zip(deps, infos)
-                      if args.force or dep.version not in info.verAll]
-
-    Log.info()
-    Log.info('==> Download ...')
-    Log.beginCounter(len(needs_download))
-    needs_install = [Brew.download(dep, dryRun=args.dry_run)
-                     for dep in needs_download]
-
-    Log.info()
-    Log.info('==> Install ...')
-    Log.beginCounter(len(needs_install))
-    Log.beginErrorSummary()
-    for tar in reversed(needs_install):
-        if args.dry_run:
-            Log.main('would install', os.path.relpath(tar, Cellar.ROOT),
-                     count=True)
-        else:
-            Cellar.install(tar, skipLink=args.skip_link, linkExe=args.binaries)
-
-    Log.endCounter()
-    Log.dumpErrorSummary()
+    queue = InstallQueue(dryRun=args.dry_run, force=args.force)
+    queue.init(args.package, recursive=not args.no_dependencies)
+    if not args.no_dependencies:
+        queue.printQueue()
+    queue.validateQueue()
+    queue.download()
+    queue.install(skipLink=args.skip_link, linkExe=args.binaries)
 
 
 # https://docs.brew.sh/Manpage#uninstall-remove-rm-options-installed_formulainstalled_cask-
@@ -652,7 +604,7 @@ def parseArgs() -> ArgParams:
         Show what would be installed, but do not actually install anything''')
     cmd.arg('-arch', help='''Manually set platform architecture
         (e.g. 'arm64_sequoia' (brew), 'arm64|darwin|macOS 15' (ghcr))''')
-    cmd.arg_bool('--ignore-dependencies', help='Do not install dependencies')
+    cmd.arg_bool('--no-dependencies', help='Do not install dependencies')
     cmd.arg_bool('--skip-link', help='Install but skip linking to opt')
     cmd.arg('--binaries', action=BooleanOptionalAction, help='''
         Enable/disable linking of helper executables (default: enabled).
@@ -1128,28 +1080,28 @@ class Brew:
         return rv
 
     @staticmethod
-    def checkUpdates(deps: list[Dependency]) -> None:
-        shownAny = False
-        for dep in deps:
-            info = Cellar.info(dep.package)
-            if dep.version not in info.verAll:
-                shownAny = True
-                Log.info(' * upgrade available {} {} (installed: {})'.format(
-                    dep.package, dep.version, ', '.join(info.verAll)))
-        if not shownAny:
-            Log.info('all packages are up to date.')
+    def checkUpdate(pkg: str, *, force: bool = False) -> None:
+        ''' Print whether package is up-to-date or needs upgrade '''
+        local = Cellar.info(pkg)
+        if local.installed:
+            onlineVersion = Brew.info(pkg, force=force).version
+            if onlineVersion in local.verAll:
+                Log.info('package is up to date.')
+            else:
+                Log.info(' * upgrade available {} (installed: {})'.format(
+                    onlineVersion, ', '.join(local.verAll)))
 
     @staticmethod
     def download(
-        dep: Dependency, *, askOverwrite: bool = False, dryRun: bool = False
+        pkg: str, version: str, digest: str,
+        *, askOverwrite: bool = False, dryRun: bool = False
     ) -> str:
-        assert dep.digest, 'digest is required for download'
-        fname = Cellar.downloadPath(dep.package, dep.version)
+        assert digest, 'digest is required for download'
+        fname = Cellar.downloadPath(pkg, version)
         # reuse already downloaded tar
         if os.path.isfile(fname):
-            if File.sha256(fname) == dep.digest:
-                Log.main('skip already downloaded', dep.package, dep.version,
-                         count=True)
+            if File.sha256(fname) == digest:
+                Log.main('skip already downloaded', pkg, version, count=True)
                 return fname
             elif askOverwrite:
                 Log.warn(f'file "{fname}" already exists')
@@ -1160,11 +1112,11 @@ class Brew:
                 Log.warn('sha256 mismatch. Ignore local file and re-download.')
 
         if dryRun:
-            Log.main('would download', dep.package, dep.version, count=True)
+            Log.main('would download', pkg, version, count=True)
         else:
-            Log.main('download', dep.package, dep.version, count=True)
-            auth = Brew._ghcrAuth(dep.package)
-            os.rename(ApiGhcr.blob(auth, dep.package, dep.digest), fname)
+            Log.main('download', pkg, version, count=True)
+            auth = Brew._ghcrAuth(pkg)
+            os.rename(ApiGhcr.blob(auth, pkg, digest), fname)
         return fname
 
 
@@ -1256,47 +1208,40 @@ class Cellar:
     # Install management
 
     @staticmethod
-    def install(
-        tarPath: str, *, skipLink: bool = False, linkExe: bool = False
-    ) -> bool:
+    def installTar(tarPath: str, *, dryRun: bool = False) \
+            -> 'tuple[str, str]|None':
         ''' Extract tar file into `@/cellar/...` '''
+        shortPath = os.path.relpath(tarPath, Cellar.ROOT)
+        if shortPath.startswith('..'):  # if path outside of cellar
+            shortPath = os.path.basename(tarPath)
+
+        if not os.path.isfile(tarPath):
+            if dryRun:
+                Log.main('would install', shortPath, count=True)
+            return None
+
         pkg, version = None, None
         with openTarfile(tarPath, 'r') as tar:
             subset = []
             for x in tar:
                 if tarFilter(x, Cellar.CELLAR):
                     subset.append(x)
-                    if x.isdir() and x.path.endswith('/.brew'):
+                    if not pkg and x.isdir() and x.path.endswith('/.brew'):
                         pkg, version, *_ = x.path.split('/')
                 else:
-                    Log.error('prohibited tar entry "{}" in ({})'.format(
-                        x.path, os.path.basename(tarPath)), summary=True)
+                    Log.error(f'prohibited tar entry "{x.path}" in', shortPath,
+                              summary=True)
 
             if pkg is None or version is None:
-                Log.error('".brew" dir missing. Failed to extract {}'.format(
-                    os.path.basename(tarPath)), summary=True, count=True)
-                return False
-            else:
-                Log.main(f'install {pkg} {version}', count=True)
+                Log.error('".brew" dir missing. Failed to extract', shortPath,
+                          summary=True, count=True)
+                return None
+
+            Log.main('would install' if dryRun else 'install', shortPath,
+                     f'({pkg} {version})', count=True)
+            if not dryRun:
                 tar.extractall(Cellar.CELLAR, subset)
-
-                with open(Cellar.rubyPath(pkg, version, 'digest'), 'w') as fp:
-                    fp.write(File.sha256(tarPath))
-
-        # relink dylibs
-        Fixer.run(pkg, version)
-
-        if skipLink:
-            return True
-
-        if Cellar.isKegOnly(pkg, version):
-            Log.warn(f'keg-only, must link manually ({pkg}, {version})',
-                     summary=True)
-        else:
-            withBin = Env.LINK_BINARIES if linkExe is None else linkExe
-            Cellar.unlinkPackage(pkg)
-            Cellar.linkPackage(pkg, version, noExe=not withBin)
-        return True
+        return pkg, version
 
     @staticmethod
     def getDependencyTree() -> DependencyTree:
@@ -1416,6 +1361,129 @@ class Cellar:
     def isKegOnly(pkg: str, version: str) -> bool:
         ''' Check if package is keg-only '''
         return RubyParser(Cellar.rubyPath(pkg, version)).parseKegOnly()
+
+
+# -----------------------------------
+#  InstallQueue
+# -----------------------------------
+
+class InstallQueue:
+    class Item(NamedTuple):
+        package: str
+        version: str
+        digest: str
+
+    def __init__(self, *, dryRun: bool, force: bool) -> None:
+        self.dryRun = dryRun
+        self.force = force
+        self._missingDigest = []  # type: list[str]  # pkg
+        self.downloadQueue = []  # type: list[InstallQueue.Item]
+        self.installQueue = []  # type: list[str]  # tar file path
+
+    def init(self, pkgOrFile: str, *, recursive: bool) -> None:
+        ''' Auto-detect input type and install from tar-file or brew online '''
+        if os.path.isfile(pkgOrFile) and pkgOrFile.endswith('.tar.gz'):
+            Log.info('==> Install from tar file ...')
+            self.installQueue.append(pkgOrFile)
+        elif '/' in pkgOrFile:
+            Log.error('package may not contain path-separator')
+        elif recursive:
+            Log.info('==> Gather dependencies ...')
+            self.addRecursive(pkgOrFile)
+        else:
+            Log.info('==> Ignoring dependencies ...')
+            bundle = Brew.info(pkgOrFile)
+            self.add(pkgOrFile, bundle.version, bundle.digest)
+
+    def addRecursive(self, pkg: str) -> None:
+        ''' Recursive online search for dependencies '''
+        queue = [pkg]
+        done = set(pkg)
+        while queue:
+            pkg = queue.pop(0)
+            bundle = Brew.info(pkg)
+            self.add(pkg, bundle.version, bundle.digest)
+            subdeps = bundle.dependencies or []
+            queue.extend(x for x in subdeps if x not in done)
+            done.update(subdeps)
+
+    def add(self, pkg: str, version: str, digest: 'str|None') -> None:
+        ''' Check if specific version exists and add to download queue '''
+        info = Cellar.info(pkg)
+        # skip if a specific version already exists
+        if not self.force and version in info.verAll:
+            # TODO: print already installed?
+            return
+        if not digest:
+            self._missingDigest.append(pkg)
+        else:
+            self.downloadQueue.append(InstallQueue.Item(pkg, version, digest))
+
+    def printQueue(self) -> None:
+        ''' Print download Queue (if any) '''
+        if not self.downloadQueue:
+            return
+        Log.info(Utils.prettyList([x.package for x in self.downloadQueue]))
+
+    def validateQueue(self) -> None:
+        ''' Check if any digest is missing. If so, fail with exit code 1 '''
+        # if any digest couldn't be determined, we must fail whole queue
+        if self._missingDigest:
+            Log.error('missing platform "{}" in: {}'.format(
+                Arch.BREW, ', '.join(self._missingDigest)))
+            exit(1)
+
+    def download(self) -> None:
+        ''' Download all dependencies in normal order (depth-first) '''
+        if not self.downloadQueue:
+            return
+        Log.info()
+        Log.info('==> Download ...')
+        Log.beginCounter(len(self.downloadQueue))
+        for x in self.downloadQueue:
+            self.installQueue.append(Brew.download(
+                x.package, x.version, x.digest, dryRun=self.dryRun))
+        Log.endCounter()
+
+    def install(self, *, skipLink: bool, linkExe: bool) -> None:
+        ''' Install all dependencies in reverse order (main package last) '''
+        Log.info()
+        Log.info('==> Install ...')
+        if not self.installQueue:
+            Log.info('nothing to install')
+            return
+        total = len(self.installQueue)
+        Log.beginCounter(total)
+        Log.beginErrorSummary()
+        # reverse to install main package last (allow re-install until success)
+        for i, tar in enumerate(reversed(self.installQueue), 1):
+            bundle = Cellar.installTar(tar, dryRun=self.dryRun)
+            if bundle:
+                self.postInstall(
+                    bundle[0], bundle[1], File.sha256(tar),
+                    skipLink=skipLink, linkExe=linkExe, isPrimary=i == total)
+        Log.endCounter()
+        Log.dumpErrorSummary()
+
+    def postInstall(
+        self, pkg: str, version: str, digest: str, *,
+        skipLink: bool, linkExe: bool, isPrimary: bool,
+    ) -> None:
+        # copy digest of tar file into install dir
+        with open(Cellar.rubyPath(pkg, version, 'digest'), 'w') as fp:
+            fp.write(digest)
+
+        # relink dylibs
+        Fixer.run(pkg, version)
+
+        if not skipLink:
+            if Cellar.isKegOnly(pkg, version):
+                Log.warn(f'keg-only, must link manually ({pkg}, {version})',
+                         summary=True)
+            else:
+                withBin = Env.LINK_BINARIES if linkExe is None else linkExe
+                Cellar.unlinkPackage(pkg)
+                Cellar.linkPackage(pkg, version, noExe=not withBin)
 
 
 # -----------------------------------
