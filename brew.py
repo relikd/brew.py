@@ -177,9 +177,10 @@ def cli_fetch(args: ArgParams) -> None:
     Log.info(' tag:', tag)
     Log.info(' digest:', digest)
 
-    pth = Brew.download(args.package, tag or digest, digest, askOverwrite=True)
+    path = Brew.downloadBottle(args.package, tag or digest, digest,
+                               askOverwrite=True)
     Log.info('==> ', end='')
-    Log.main(pth)
+    Log.main(path)
 
 
 # https://docs.brew.sh/Manpage#list-ls-options-installed_formulainstalled_cask-
@@ -1094,7 +1095,7 @@ class Brew:
                     onlineVersion, ', '.join(local.verAll)))
 
     @staticmethod
-    def download(
+    def downloadBottle(
         pkg: str, version: str, digest: str,
         *, askOverwrite: bool = False, dryRun: bool = False
     ) -> str:
@@ -1443,7 +1444,7 @@ class InstallQueue:
         Log.info('==> Download ...')
         Log.beginCounter(len(self.downloadQueue))
         for x in self.downloadQueue:
-            self.installQueue.append(Brew.download(
+            self.installQueue.append(Brew.downloadBottle(
                 x.package, x.version, x.digest, dryRun=self.dryRun))
         Log.endCounter()
 
