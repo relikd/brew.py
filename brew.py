@@ -1171,10 +1171,15 @@ class Cellar:
         return os.path.join(Cellar.CELLAR, pkg, version)
 
     @staticmethod
-    def rubyPath(pkg: str, version: str, otherName: str = '') -> str:
-        ''' Returns `@/cellar/<pkg>/<version>/.brew/{<pkg>.rb|<otherName>}` '''
+    def configPath(pkg: str, version: str, fileName: str) -> str:
+        ''' Returns `@/cellar/<pkg>/<version>/.brew/<fileName>` '''
         pkgRoot = Cellar.installPath(pkg, version)
-        return os.path.join(pkgRoot, '.brew', otherName or (pkg + '.rb'))
+        return os.path.join(pkgRoot, '.brew', fileName)
+
+    @staticmethod
+    def rubyPath(pkg: str, version: str) -> str:
+        ''' Returns `@/cellar/<pkg>/<version>/.brew/<pkg>.rb` '''
+        return Cellar.configPath(pkg, version, pkg + '.rb')
 
     # Version handling
 
@@ -1473,8 +1478,11 @@ class InstallQueue:
         skipLink: bool, linkExe: bool, isPrimary: bool,
     ) -> None:
         # copy digest of tar file into install dir
-        with open(Cellar.rubyPath(pkg, version, 'digest'), 'w') as fp:
+        with open(Cellar.configPath(pkg, version, 'digest'), 'w') as fp:
             fp.write(digest)
+
+        File.touch(Cellar.configPath(
+            pkg, version, 'primary' if isPrimary else 'secondary'))
 
         # relink dylibs
         Fixer.run(pkg, version)
@@ -1940,6 +1948,12 @@ class File:
             while data := f.read(65536):
                 rv.update(data)
         return rv.hexdigest()
+
+    @staticmethod
+    def touch(fname: str) -> None:
+        ''' Update access time of file (or create new file) '''
+        with open(fname, 'a'):
+            os.utime(fname, None)
 
     @staticmethod
     def folderSize(path: str) -> tuple[int, int]:
