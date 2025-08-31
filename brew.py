@@ -352,7 +352,7 @@ def cli_uninstall(args: ArgParams) -> None:
     total_savings = 0
     for pkg in needsUninstall:
         path = Cellar.installPath(pkg)
-        total_savings += File.remove(path, args.dry_run)
+        total_savings += File.remove(path, dryRun=args.dry_run)
 
     Log.info('==> This operation {} approximately {} of disk space.'.format(
         'would free' if args.dry_run else 'has freed',
@@ -476,7 +476,7 @@ def cli_cleanup(args: ArgParams) -> None:
         maxage = Env.MAX_AGE_DOWNLOAD if args.prune is None else args.prune
         for file in os.scandir(Cellar.DOWNLOAD):
             if File.isOutdated(file.path, maxage * 24 * 60 * 60):
-                total_savings += File.remove(file.path, args.dry_run)
+                total_savings += File.remove(file.path, dryRun=args.dry_run)
 
     # remove all non-active versions
     Log.info('==> Removing old versions')
@@ -485,7 +485,7 @@ def cli_cleanup(args: ArgParams) -> None:
             if Cellar.isKegOnly(info.package, ver):
                 continue
             path = Cellar.installPath(info.package, ver)
-            total_savings += File.remove(path, args.dry_run)
+            total_savings += File.remove(path, dryRun=args.dry_run)
 
     # should never happen but just in case, remove symlinks which point nowhere
     Log.info('==> Removing dead links')
@@ -497,7 +497,7 @@ def cli_cleanup(args: ArgParams) -> None:
 
     for link in binLinks:
         if not os.path.exists(link.target):
-            total_savings += File.remove(link.path, args.dry_run)
+            total_savings += File.remove(link.path, dryRun=args.dry_run)
 
     Log.main('==> This operation {} approximately {} of disk space.'.format(
         'would free' if args.dry_run else 'has freed',
@@ -1958,7 +1958,7 @@ class File:
         return files, size
 
     @staticmethod
-    def remove(path: str, dryRun: bool) -> int:
+    def remove(path: str, *, dryRun: bool) -> int:
         '''Delete file or folder. Calculate and print size. Optional dry-run'''
         isdir = os.path.isdir(path)
         if isdir:
