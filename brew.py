@@ -1929,10 +1929,12 @@ class RubyParser:
 class File:
     @staticmethod
     def isOutdated(fname: str, maxage: int) -> bool:
+        ''' Check if `fname` is older than `maxage` '''
         return datetime.now().timestamp() - os.path.getmtime(fname) > maxage
 
     @staticmethod
     def sha256(fname: str) -> str:
+        ''' Calculate sha256 sum of file content '''
         rv = hashlib.sha256()
         with open(fname, 'rb') as f:
             while data := f.read(65536):
@@ -1941,6 +1943,7 @@ class File:
 
     @staticmethod
     def folderSize(path: str) -> tuple[int, int]:
+        '''Calculate total size of folder and all it's content (recursively)'''
         files = 0
         size = 0
         for entry in os.scandir(path):
@@ -1956,6 +1959,7 @@ class File:
 
     @staticmethod
     def remove(path: str, dryRun: bool) -> int:
+        '''Delete file or folder. Calculate and print size. Optional dry-run'''
         isdir = os.path.isdir(path)
         if isdir:
             files, size = File.folderSize(path)
@@ -1975,11 +1979,13 @@ class File:
 class Utils:
     @staticmethod
     def ask(msg: str, default: str = 'y') -> bool:
+        ''' Show user-input dialog. Returns `True` if user answered "yes" '''
         ans = input(msg + (' [Y/n] ' if default == 'y' else ' [y/N] '))
         return (ans or default).lower().startswith('y')
 
     @staticmethod
     def humanSize(size: float) -> str:
+        ''' Convert bytes to human readable format, e.g., 4096 -> "4K" '''
         for unit in 'BKMGTP':
             if size < 1024.0:
                 break
@@ -1990,6 +1996,7 @@ class Utils:
 
     @staticmethod
     def cmpVersion(left: Version, op: str, right: Version) -> bool:
+        '''Convert `op` string to mathematical operation (<=, >=, <, >, ==)'''
         if op == '<=':
             return left <= right
         if op == '>=':
@@ -2004,6 +2011,7 @@ class Utils:
 
     @staticmethod
     def prettyList(arr: list[str], prefix: str = '  - ') -> str:
+        ''' Join list of items with newline and prepend `prefix` '''
         return '\n'.join(prefix + x for x in arr)
 
     @staticmethod
@@ -2012,6 +2020,7 @@ class Utils:
         min_lines: int = 1, prefix: str = '', sep: str = '    ',
         plainList: bool = False,
     ) -> None:
+        '''Detect best possible column-width and print `strings` in columns'''
         if not strings:
             return
         if plainList:
@@ -2049,6 +2058,7 @@ class Utils:
 class Bash:
     @staticmethod
     def getVersion(cmd: list[str], pattern: str) -> list[int]:
+        ''' Run `cmd` and match `pattern` (should include 1 matching group) '''
         try:
             rv = shell.run(cmd, capture_output=True)
             if match := re.search(pattern.encode('utf8'), rv.stdout):
