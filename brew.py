@@ -59,7 +59,7 @@ def main() -> None:
 # https://docs.brew.sh/Manpage#info-abv-options-formulacask-
 def cli_info(args: ArgParams) -> None:
     ''' List versions, dependencies, platforms, etc. '''
-    if args.version is True:
+    if args.version is True:  # can be either bool or string (not both)
         Log.main(Brew.info(args.package, force=True).version)
         return
 
@@ -1061,26 +1061,6 @@ class Brew:
         Log.debug('[DEBUG] query ghcr tags for', pkg, '...')
         auth = Brew._ghcrAuth(pkg)
         return ApiGhcr.tags(auth, pkg, force=force)['tags']
-
-    class Dependency(NamedTuple):
-        package: str
-        version: str
-        digest: Optional[str]
-
-    @staticmethod
-    def gatherDependencies(pkg: str, *, recursive: bool) -> list[Dependency]:
-        rv = []
-        queue = [pkg]
-        done = set(pkg)
-        while queue:
-            pkg = queue.pop(0)
-            bundle = Brew.info(pkg)
-            rv.append(Brew.Dependency(pkg, bundle.version, bundle.digest))
-            if recursive:
-                subdeps = bundle.dependencies or []
-                queue.extend(x for x in subdeps if x not in done)
-                done.update(subdeps)
-        return rv
 
     @staticmethod
     def checkUpdate(pkg: str, *, force: bool = False) -> None:
