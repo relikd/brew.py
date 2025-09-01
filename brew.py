@@ -300,72 +300,22 @@ def cli_install(args: ArgParams) -> None:
 # https://docs.brew.sh/Manpage#uninstall-remove-rm-options-installed_formulainstalled_cask-
 def cli_uninstall(args: ArgParams) -> None:
     ''' Remove / uninstall a package. '''
-    depTree = Cellar.getDependencyTree()
-    depTree.forward.assertExist(args.packages + args.ignore)
-
-    recipe = depTree.collectUninstall(
-        args.packages, args.ignore, ignoreDependencies=args.no_dependencies)
-
-    # hard-fail check. no direct dependencies
-    if not args.force and recipe.warnings:
-        for pkg, deps in recipe.warnings:
-            if args.leaves:
-                deps = depTree.reverse.getLeaves(pkg).difference(
-                    args.packages, args.ignore)
-            Log.error('{} is a {}dependency of {}'.format(
-                pkg, '' if args.leaves else 'direct ', ', '.join(deps)))
-        exit(1)
-
-    needsUninstall = sorted(recipe.remove)
-
+    queue = UninstallQueue()
+    queue.collect(args.packages, args.ignore, leaves=args.leaves,
+                  ignoreDependencies=args.no_dependencies)
+    if not args.force:
+        # hard-fail check. no direct dependencies
+        queue.validateQueue()
     # show potential changes
     if not args.dry_run:
-        for pkg in needsUninstall:
-            Log.main(f'==> will remove {pkg}.')
-
+        queue.printUninstallQueue()
     # soft-fail check. warning for any doubly used dependencies
-    for pkg in sorted(recipe.skip):
-        if args.leaves:
-            deps = depTree.reverse.getLeaves(pkg)
-        else:
-            deps = depTree.reverse.direct[pkg]
-        Log.warn(f'skip {pkg}. used by:',
-                 ', '.join(deps.difference(recipe.remove, args.ignore)))
-
-    # if interactive, show potential changes and ask user to continue
-    if args.dry_run or args.yes:
-        pass
-    elif not Utils.ask('Do you want to continue?', 'n'):
+    queue.printSkipped()
+    # if interactive, ask user to continue
+    if args.dry_run or args.yes or Utils.ask('Do you want to continue?', 'n'):
+        queue.uninstall(dryRun=args.dry_run)
+    else:
         Log.info('abort.')
-        return
-
-    # delete links
-    Log.info('==> Remove symlinks for', len(needsUninstall), 'packages')
-    count = 0
-    for pkg in needsUninstall:
-        count += len(Cellar.unlinkPackage(
-            pkg, dryRun=args.dry_run, quiet=args.dry_run and Log.LEVEL <= 2))
-    Log.main('Would remove' if args.dry_run else 'Removed', count, 'symlinks')
-
-    # delete packages and links
-    Log.info('==> Uninstall', len(needsUninstall), 'packages')
-    total_savings = 0
-    for pkg in needsUninstall:
-        path = Cellar.installPath(pkg)
-        total_savings += File.remove(path, dryRun=args.dry_run)
-
-    Log.info('==> This operation {} approximately {} of disk space.'.format(
-        'would free' if args.dry_run else 'has freed',
-        Utils.humanSize(total_savings)))
-
-    if args.dry_run:
-        print()
-        print('The following packages will be removed:')
-        Utils.printInColumns(needsUninstall)
-        if recipe.skip:
-            print()
-            print('The following packages will NOT be removed:')
-            Utils.printInColumns(sorted(recipe.skip))
 
 
 # https://docs.brew.sh/Manpage#link-ln-options-installed_formula-
@@ -499,7 +449,7 @@ def cli_cleanup(args: ArgParams) -> None:
         if not os.path.exists(link.target):
             total_savings += File.remove(link.path, dryRun=args.dry_run)
 
-    Log.main('==> This operation {} approximately {} of disk space.'.format(
+    Log.main('==> This operation {} approximately {} of disk space'.format(
         'would free' if args.dry_run else 'has freed',
         Utils.humanSize(total_savings)))
 
@@ -1607,6 +1557,124 @@ class Fixer:
             Log.debug('  codesign')
             Bash.codesign(fname)
             os.utime(fname, (atime, mtime))
+
+
+# -----------------------------------
+#  UninstallQueue
+# -----------------------------------
+
+class UninstallQueue:
+    def __init__(self) -> None:
+        # uses after uninstall (primary dependencies with multiple parents)
+        self.warnings = {}  # type: dict[str, set[str]]  # {pkg: {deps}}
+        # used by other packages (secondary dependencies with multiple parents)
+        self.skips = {}  # type: dict[str, set[str]]  # {pkg: {deps}}
+        # list of packages that will be removed
+        self.uninstallQueue = []  # type: list[str]
+
+    def collect(
+        self, deletePkgs: list[str], hiddenPkgs: list[str], *,
+        leaves: bool, ignoreDependencies: bool,
+    ) -> None:
+        '''
+        Try to uninstall all `deletePkgs`. Act as if `hiddenPkgs` don't exist.
+        Any package that depends on another package (not in those two sets)
+        will be skipped and remains on the system.
+        '''
+        tree = Cellar.getDependencyTree()
+        tree.forward.assertExist(deletePkgs + hiddenPkgs)
+
+        def getDeps(pkg: str) -> set[str]:
+            if leaves:
+                return tree.reverse.getLeaves(pkg)
+            else:
+                return tree.reverse.direct[pkg]
+
+        def setWarnings(hidden: set[str]) -> None:
+            self.warnings = {pkg: deps for pkg in deletePkgs
+                             if (deps := getDeps(pkg) - hidden)}
+
+        # user said "these aren't the packages you're looking for"
+        activelyIgnored = tree.obsolete(hiddenPkgs)
+
+        if ignoreDependencies:
+            setWarnings(activelyIgnored.union(deletePkgs))
+            self.uninstallQueue = deletePkgs  # TODO: copy?
+            self.skips = {}
+            return
+
+        # ideally, we uninstall <deletePkgs> and all its dependencies
+        rawUninstall = tree.forward.unionAll(deletePkgs)
+
+        # dont consider these, they will be gone (or are actively ignored)
+        hidden = activelyIgnored.union(rawUninstall)
+
+        # only secondary items can be skipped, primary are always removed
+        secondary = rawUninstall.difference(deletePkgs)
+        # skip a package if it has other, non-ignored, parents
+        skipped = tree.reverse.filterDifference(secondary, hidden)
+        removed = rawUninstall.difference(skipped)
+
+        # recursively ignore dependencies that rely on already ignored
+        while deps := tree.reverse.filterIntersection(removed, skipped):
+            skipped.update(deps)
+            removed.difference_update(deps)
+
+        # remove any not-installed packages
+        removed -= tree.forward.missing(removed)
+
+        setWarnings(hidden)
+        self.uninstallQueue = sorted(removed)
+        irrelevant = removed.union(hiddenPkgs)
+        self.skips = {pkg: deps for pkg in skipped
+                      if (deps := getDeps(pkg) - irrelevant)}
+
+    def validateQueue(self) -> None:
+        ''' Check for direct dependencies. If found, fail with exit code 1 '''
+        if self.warnings:
+            for pkg, deps in sorted(self.warnings.items()):
+                Log.error(pkg, 'is a dependency of', ', '.join(sorted(deps)))
+            exit(1)
+
+    def printUninstallQueue(self) -> None:
+        for pkg in self.uninstallQueue:
+            Log.main(f'==> will remove {pkg}.')
+
+    def printSkipped(self) -> None:
+        for pkg, deps in sorted(self.skips.items()):
+            Log.warn(f'skip {pkg}. used by:', ', '.join(sorted(deps)))
+
+    def uninstall(self, *, dryRun: bool) -> None:
+        countPkgs = len(self.uninstallQueue)
+
+        # delete links
+        Log.info('==> Remove symlinks for', countPkgs, 'packages')
+        countSym = 0
+        for pkg in self.uninstallQueue:
+            links = Cellar.unlinkPackage(
+                pkg, dryRun=dryRun, quiet=dryRun and Log.LEVEL <= 2)
+            countSym += len(links)
+        Log.main('Would remove' if dryRun else 'Removed', countSym, 'symlinks')
+
+        # delete packages and links
+        Log.info('==> Uninstall', countPkgs, 'packages')
+        total_savings = 0
+        for pkg in self.uninstallQueue:
+            path = Cellar.installPath(pkg)
+            total_savings += File.remove(path, dryRun=dryRun)
+
+        Log.info('==> This operation {} approximately {} of disk space'.format(
+            'would free' if dryRun else 'has freed',
+            Utils.humanSize(total_savings)))
+
+        if dryRun:
+            print()
+            print('The following packages will be removed:')
+            Utils.printInColumns(self.uninstallQueue)
+            if self.skips:
+                print()
+                print('The following packages will NOT be removed:')
+                Utils.printInColumns(sorted(self.skips))
 
 
 # -----------------------------------
