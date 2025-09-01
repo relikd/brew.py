@@ -186,7 +186,7 @@ def cli_fetch(args: ArgParams) -> None:
 # https://docs.brew.sh/Manpage#list-ls-options-installed_formulainstalled_cask-
 def cli_list(args: ArgParams) -> None:
     ''' List installed packages. '''
-    infos = Cellar.infoAll(args.packages)
+    infos = Cellar.infoAll(args.packages, assertInstalled=True)
     if args.multiple:
         infos = [x for x in infos if len(x.verAll) > 1]
     if args.pinned:
@@ -323,11 +323,7 @@ def cli_uninstall(args: ArgParams) -> None:
 # https://docs.brew.sh/Manpage#link-ln-options-installed_formula-
 def cli_link(args: ArgParams) -> None:
     ''' Link a specific package version (activate). '''
-    info = Cellar.info(args.package)
-    if not info.installed:
-        Log.error('unknown package:', args.package)
-        return
-
+    info = Cellar.info(args.package, assertInstalled=True)
     if info.verActive:
         # must unlink before relinking (except --bin)
         if args.bin:
@@ -364,10 +360,7 @@ def cli_link(args: ArgParams) -> None:
 # https://docs.brew.sh/Manpage#unlink---dry-run-installed_formula-
 def cli_unlink(args: ArgParams) -> None:
     ''' Remove symlinks for package to (temporarily) disable it. '''
-    info = Cellar.info(args.package)
-    if not info.installed:
-        Log.error('unknown package:', args.package)
-        return
+    info = Cellar.info(args.package, assertInstalled=True)
     if not info.verActive:
         Log.error(args.package, 'is not active')
         return
@@ -379,10 +372,7 @@ def cli_unlink(args: ArgParams) -> None:
 
 def cli_switch(args: ArgParams) -> None:
     ''' Change package version. '''
-    info = Cellar.info(args.package)
-    if not info.installed:
-        Log.error('unknown package:', args.package)
-        return
+    info = Cellar.info(args.package, assertInstalled=True)
     if not info.verActive:
         Log.error('cannot switch, package is not active')
         return
@@ -412,19 +402,17 @@ def cli_switch(args: ArgParams) -> None:
 # https://docs.brew.sh/Manpage#pin-installed_formula-
 def cli_pin(args: ArgParams) -> None:
     ''' Prevent specified packages from being upgraded. '''
-    Cellar.assertAllInstalled(args.packages)
-    for pkg in args.packages:
-        if Cellar.pinPackage(pkg):
-            Log.info('pinned', pkg)
+    for info in Cellar.infoAll(args.packages, assertInstalled=True):
+        if Cellar.pinPackage(info.package):
+            Log.info('pinned', info.package)
 
 
 # https://docs.brew.sh/Manpage#unpin-installed_formula-
 def cli_unpin(args: ArgParams) -> None:
     ''' Allow specified packages to be upgraded. '''
-    Cellar.assertAllInstalled(args.packages)
-    for pkg in args.packages:
-        if Cellar.pinPackage(pkg, False):
-            Log.info('unpinned', pkg)
+    for info in Cellar.infoAll(args.packages, assertInstalled=True):
+        if Cellar.pinPackage(info.package, False):
+            Log.info('unpinned', info.package)
 
 
 # https://docs.brew.sh/Manpage#cleanup-options-formulacask-
@@ -436,7 +424,7 @@ def cli_cleanup(args: ArgParams) -> None:
     This can be adjusted with $BREW_PY_CLEANUP_MAX_AGE_DAYS.
     '''
     total_savings = 0
-    infos = Cellar.infoAll(args.packages)
+    infos = Cellar.infoAll(args.packages, assertInstalled=True)
     if not infos:
         Log.error('no package found')
         return
@@ -1105,7 +1093,7 @@ class Cellar:
         verAll: list[str]
 
     @staticmethod
-    def info(pkg: str) -> PackageInfo:
+    def info(pkg: str, *, assertInstalled: bool = False) -> PackageInfo:
         ''' Info about active and available package versions '''
         optLink = Cellar.getOptLink(pkg, ensurePkg=True)
         active = os.path.basename(optLink.target) if optLink else None
@@ -1119,14 +1107,27 @@ class Cellar:
                     available.append(ver)
                     if ver != active:
                         inactive.append(ver)
+
+        isInstalled = len(available) > 0
+        # hard-fail if asserting for installed
+        if assertInstalled and not isInstalled:
+            Log.error('unknown package:', pkg)
+            exit(1)
         return Cellar.PackageInfo(
-            pkg, len(available) > 0, isPinned, active, inactive, available)
+            pkg, isInstalled, isPinned, active, inactive, available)
 
     @staticmethod
-    def infoAll(filterPkg: list[str] = []) -> list[PackageInfo]:
+    def infoAll(filterPkg: list[str] = [], *, assertInstalled: bool = False) \
+            -> list[PackageInfo]:
         ''' List all installed packages (already checked for `.installed`) '''
         pkgs = filterPkg if filterPkg else sorted(os.listdir(Cellar.CELLAR))
-        return [info for pkg in pkgs if (info := Cellar.info(pkg)).installed]
+        infos = [info for pkg in pkgs if (info := Cellar.info(pkg)).installed]
+        # hard-fail if asserting for installed
+        if assertInstalled and filterPkg and len(pkgs) != len(infos):
+            unkownPkgs = set(pkgs) - set(x.package for x in infos)
+            Log.error('unknown package:', ', '.join(sorted(unkownPkgs)))
+            exit(1)
+        return infos
 
     @staticmethod
     def pinPackage(pkg: str, pin: bool = True) -> bool:
@@ -1139,14 +1140,6 @@ class Cellar:
         elif os.path.exists(pin_file):
             os.remove(pin_file)
         return changed
-
-    @staticmethod
-    def assertAllInstalled(pkgs: list[str], msg: str = 'unknown package:') \
-            -> None:
-        ''' Print any non-installed package and exit with status code 1 '''
-        if unknownPkgs := [x for x in pkgs if not Cellar.info(x).installed]:
-            Log.error(msg, ', '.join(unknownPkgs))
-            exit(1)
 
     @staticmethod
     def getDependencyTree() -> DependencyTree:
