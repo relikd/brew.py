@@ -892,55 +892,6 @@ class DependencyTree:
         else:
             return set(self.reverse).difference(self.forward)
 
-    class UninstallRecipe(NamedTuple):
-        remove: set[str]
-        skip: set[str]
-        warnings: list[tuple[str, set[str]]]  # [(pkg, {deps})]
-
-    def collectUninstall(
-        self, deletePkgs: list[str], hiddenPkgs: list[str],
-        *, ignoreDependencies: bool
-    ) -> UninstallRecipe:
-        '''
-        Try to uninstall all `deletePkgs`. Act as if `hiddenPkgs` don't exist.
-        Any package that depends on another package (not in those two sets)
-        will be skipped and remains on the system.
-        '''
-        def warnings(hidden: set[str]) -> list[tuple]:
-            # uses after uninstall (dependencies with multiple parents)
-            return [(pkg, deps) for pkg in deletePkgs
-                    if (deps := self.reverse.direct[pkg] - hidden)]
-
-        # user said "these aren't the packages you're looking for"
-        activelyIgnored = self.obsolete(hiddenPkgs)
-
-        if ignoreDependencies:
-            hidden = activelyIgnored.union(deletePkgs)
-            return self.UninstallRecipe(
-                set(deletePkgs), set(), warnings(hidden))
-
-        # ideally, we uninstall <deletePkgs> and all its dependencies
-        rawUninstall = self.forward.unionAll(deletePkgs)
-
-        # dont consider these, they will be gone (or are actively ignored)
-        hidden = activelyIgnored.union(rawUninstall)
-
-        # only secondary items can be skipped, primary are always removed
-        secondary = rawUninstall.difference(deletePkgs)
-        # skip a package if it has other, non-ignored, parents
-        skipped = self.reverse.filterDifference(secondary, hidden)
-        removed = rawUninstall.difference(skipped)
-
-        # recursively ignore dependencies that rely on already ignored
-        while deps := self.reverse.filterIntersection(removed, skipped):
-            skipped.update(deps)
-            removed.difference_update(deps)
-
-        # remove any not-installed packages
-        removed -= self.forward.missing(removed)
-
-        return self.UninstallRecipe(removed, skipped, warnings(hidden))
-
 
 # -----------------------------------
 #  Remote logic
@@ -1581,21 +1532,21 @@ class UninstallQueue:
         Any package that depends on another package (not in those two sets)
         will be skipped and remains on the system.
         '''
-        tree = Cellar.getDependencyTree()
-        tree.forward.assertExist(deletePkgs + hiddenPkgs)
+        depTree = Cellar.getDependencyTree()
+        depTree.forward.assertExist(deletePkgs + hiddenPkgs)
 
         def getDeps(pkg: str) -> set[str]:
             if leaves:
-                return tree.reverse.getLeaves(pkg)
+                return depTree.reverse.getLeaves(pkg)
             else:
-                return tree.reverse.direct[pkg]
+                return depTree.reverse.direct[pkg]
 
         def setWarnings(hidden: set[str]) -> None:
             self.warnings = {pkg: deps for pkg in deletePkgs
                              if (deps := getDeps(pkg) - hidden)}
 
         # user said "these aren't the packages you're looking for"
-        activelyIgnored = tree.obsolete(hiddenPkgs)
+        activelyIgnored = depTree.obsolete(hiddenPkgs)
 
         if ignoreDependencies:
             setWarnings(activelyIgnored.union(deletePkgs))
@@ -1604,7 +1555,7 @@ class UninstallQueue:
             return
 
         # ideally, we uninstall <deletePkgs> and all its dependencies
-        rawUninstall = tree.forward.unionAll(deletePkgs)
+        rawUninstall = depTree.forward.unionAll(deletePkgs)
 
         # dont consider these, they will be gone (or are actively ignored)
         hidden = activelyIgnored.union(rawUninstall)
@@ -1612,16 +1563,16 @@ class UninstallQueue:
         # only secondary items can be skipped, primary are always removed
         secondary = rawUninstall.difference(deletePkgs)
         # skip a package if it has other, non-ignored, parents
-        skipped = tree.reverse.filterDifference(secondary, hidden)
+        skipped = depTree.reverse.filterDifference(secondary, hidden)
         removed = rawUninstall.difference(skipped)
 
         # recursively ignore dependencies that rely on already ignored
-        while deps := tree.reverse.filterIntersection(removed, skipped):
+        while deps := depTree.reverse.filterIntersection(removed, skipped):
             skipped.update(deps)
             removed.difference_update(deps)
 
         # remove any not-installed packages
-        removed -= tree.forward.missing(removed)
+        removed -= depTree.forward.missing(removed)
 
         setWarnings(hidden)
         self.uninstallQueue = sorted(removed)
@@ -1637,14 +1588,17 @@ class UninstallQueue:
             exit(1)
 
     def printUninstallQueue(self) -> None:
+        ''' Print list of `==> will remove X.` '''
         for pkg in self.uninstallQueue:
             Log.main(f'==> will remove {pkg}.')
 
     def printSkipped(self) -> None:
+        ''' Print list of `skip X. used by: {deps}` '''
         for pkg, deps in sorted(self.skips.items()):
             Log.warn(f'skip {pkg}. used by:', ', '.join(sorted(deps)))
 
     def uninstall(self, *, dryRun: bool) -> None:
+        ''' Remove symlinks and package directories (or pretend to do) '''
         countPkgs = len(self.uninstallQueue)
 
         # delete links
