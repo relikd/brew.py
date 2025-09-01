@@ -94,11 +94,11 @@ def cli_info(args: ArgParams) -> None:
         ver = args.version or pkg.activeVersion
         if ver:
             Log.info(f' Dependencies[{ver}]:')
-            if ver not in pkg.allVersions:
+            vpkg = pkg.version(ver)
+            if not vpkg.installed:
                 Log.info('  <not installed>')
             else:
-                localDeps = pkg.getDependencies(ver)
-                Log.info(' ', ', '.join(sorted(localDeps)) or '<none>')
+                Log.info(' ', ', '.join(sorted(vpkg.dependencies)) or '<none>')
 
     Log.info()
     Utils.ask('search online?') or exit(0)
@@ -286,7 +286,7 @@ def cli_missing(args: ArgParams) -> None:
 def cli_install(args: ArgParams) -> None:
     ''' Install a package with all dependencies. '''
     pkg = LocalPackage(args.package)
-    if pkg.installed and not args.force:
+    if not args.force and pkg.installed:
         Log.info(pkg.name, 'already installed, checking for newer version')
         pkg.checkUpdate()
         return
@@ -333,7 +333,7 @@ def cli_link(args: ArgParams) -> None:
             Log.error(f'already linked to {pkg.activeVersion}. Unlink first.')
             return
 
-    # auto-fill version if there is only one version
+    # auto-fill version if there is only one installed
     if not args.version:
         if len(pkg.allVersions) == 1:
             args.version = pkg.allVersions[0]
@@ -343,31 +343,33 @@ def cli_link(args: ArgParams) -> None:
             Log.error('no package version provided.')
             return
 
+    vpkg = pkg.version(args.version)
+
     # check if package is really installed
-    if args.version not in pkg.allVersions:
-        Log.error('package version', args.version, 'not found')
+    if not vpkg.installed:
+        Log.error('package version', vpkg.version, 'not found')
         return
 
-    if not args.force and pkg.isKegOnly(args.version):
-        Log.error(args.package, 'is keg-only. Use -f to force linking.')
+    if not args.force and vpkg.isKegOnly:
+        Log.error(pkg.name, 'is keg-only. Use -f to force linking.')
         return
 
     # perform link
-    pkg.link(args.version, noExe=args.no_bin, dryRun=args.dry_run)
-    Log.main('==> Linked to', args.version)
+    vpkg.link(noExe=args.no_bin, dryRun=args.dry_run)
+    Log.main('==> Linked to', vpkg.version)
 
 
 # https://docs.brew.sh/Manpage#unlink---dry-run-installed_formula-
 def cli_unlink(args: ArgParams) -> None:
     ''' Remove symlinks for package to (temporarily) disable it. '''
     pkg = LocalPackage(args.package).assertInstalled()
-    if not pkg.activeVersion:
-        Log.error(args.package, 'is not active')
+    if not (prev := pkg.activeVersion):
+        Log.error(pkg.name, 'is not active')
         return
 
     # perform unlink
     pkg.unlink(onlyExe=args.bin, dryRun=args.dry_run)
-    Log.main('==> Unlinked', pkg.activeVersion)
+    Log.main('==> Unlinked', prev)
 
 
 def cli_switch(args: ArgParams) -> None:
@@ -393,8 +395,8 @@ def cli_switch(args: ArgParams) -> None:
 
     noBinsLinks = not pkg.binLinks
     pkg.unlink(onlyExe=False)
-    pkg.link(args.version, noExe=noBinsLinks)
-    Log.main('==> switched to version', args.version)
+    pkg.version(args.version).link(noExe=noBinsLinks)
+    Log.main('==> switched to version', pkg.activeVersion)
     if noBinsLinks:
         Log.warn('no binary links found. Skipped for new version as well.')
 
@@ -440,16 +442,16 @@ def cli_cleanup(args: ArgParams) -> None:
     Log.info('==> Removing old versions')
     for pkg in packages:
         for ver in pkg.inactiveVersions:
-            if pkg.isKegOnly(ver):
+            vpkg = pkg.version(ver)
+            if vpkg.isKegOnly:
                 continue
-            path = os.path.join(pkg.path, ver)
-            total_savings += File.remove(path, dryRun=args.dry_run)
+            total_savings += File.remove(vpkg.path, dryRun=args.dry_run)
 
     # should never happen but just in case, remove symlinks which point nowhere
     Log.info('==> Removing dead links')
     binLinks = Cellar.allBinLinks()
     if args.packages:
-        deadPaths = set(Cellar.installPath(x) + '/' for x in args.packages)
+        deadPaths = set(x.path + '/' for x in packages)
         binLinks = [x for x in binLinks
                     if any(x.target.startswith(y) for y in deadPaths)]
 
@@ -951,6 +953,10 @@ class LocalPackage:
             exit(1)
         return self
 
+    def version(self, version: str) -> 'LocalPackageVersion':
+        ''' Create new `LocalPackageVersion` instance '''
+        return LocalPackageVersion(self, version)
+
     def checkUpdate(self, *, force: bool = False) -> None:
         ''' Print whether package is up-to-date or needs upgrade '''
         if self.installed:
@@ -961,28 +967,15 @@ class LocalPackage:
                 Log.info(' * upgrade available {} (installed: {})'.format(
                     onlineVersion, ', '.join(self.allVersions)))
 
-    # Ruby file processing
-
-    def rubyPath(self, version: str) -> str:
-        ''' Returns `@/cellar/<pkg>/<version>/.brew/<pkg>.rb` '''
-        return os.path.join(self.path, version, '.brew', self.name + '.rb')
+    # Version properties on any version
 
     @cached_property
     def homepageUrl(self) -> 'str|None':
         ''' Extract homepage url from ruby file '''
         version = self.activeVersion or ([None] + self.allVersions)[-1]
         if version:
-            return RubyParser(self.rubyPath(version)).parseHomepageUrl()
+            return self.version(version).homepageUrl
         return None
-
-    def getDependencies(self, version: str) -> set[str]:
-        ''' Extract dependencies from ruby file '''
-        assert version, 'version is required'
-        return RubyParser(self.rubyPath(version)).parse().dependencies
-
-    def isKegOnly(self, version: str) -> bool:
-        ''' Check if package is keg-only '''
-        return RubyParser(self.rubyPath(version)).parseKegOnly()
 
     # Versions
 
@@ -1042,12 +1035,6 @@ class LocalPackage:
             self.__dict__.pop('primary', None)  # clear cached_property
         File.touch(fname)
 
-    def setDigest(self, version: str, digest: str) -> None:
-        ''' Copy digest of tar file into install dir '''
-        digest_file = os.path.join(self.path, version, '.brew', 'digest')
-        with open(digest_file, 'w') as fp:
-            fp.write(digest)
-
     # Symlink processing
 
     def readOptLink(self, *, ensurePkg: bool) -> 'LinkTarget|None':
@@ -1072,11 +1059,13 @@ class LocalPackage:
         ''' remove symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
         rv = []
         rv += self.binLinks
-        del self.binLinks  # clear cached_property
+        if not dryRun:
+            del self.binLinks  # clear cached_property
 
         if not onlyExe:
             rv += filter(None, [self.readOptLink(ensurePkg=False)])
-            self.__dict__.pop('optLink', None)  # clear cached_property
+            if not dryRun:
+                self._resetCachedProperty(inclBin=False)
 
         for lnk in rv:
             if not quiet:
@@ -1085,33 +1074,83 @@ class LocalPackage:
                 os.remove(lnk.path)
         return rv
 
-    def _gatherBinaries(self, version: str) -> list[str]:
+    def _resetCachedProperty(self, *, inclBin: bool) -> None:
+        # clear cached_property
+        self.__dict__.pop('optLink', None)
+        self.__dict__.pop('activeVersion', None)
+        self.__dict__.pop('inactiveVersions', None)
+        if inclBin:
+            self.__dict__.pop('binLinks', None)
+
+
+# -----------------------------------
+#  LocalPackageVersion
+# -----------------------------------
+
+class LocalPackageVersion:
+    '''
+    Most properties are cached. Throw away your instance after (un-)install.
+    '''
+
+    def __init__(self, pkg: LocalPackage, version: str) -> None:
+        assert version, 'version is required'
+        self.pkg = pkg
+        self.version = version
+        self.path = os.path.join(pkg.path, version)  # type: str
+
+    @cached_property
+    def installed(self) -> bool:
+        ''' Returns `True` if version is installed (`.brew` dir exists) '''
+        return os.path.isdir(os.path.join(self.path, '.brew'))
+
+    # Ruby file processing
+
+    @cached_property
+    def rubyPath(self) -> str:
+        ''' Returns `@/cellar/<pkg>/<version>/.brew/<pkg>.rb` '''
+        return os.path.join(self.path, '.brew', self.pkg.name + '.rb')
+
+    @cached_property
+    def homepageUrl(self) -> 'str|None':
+        ''' Extract homepage url from ruby file '''
+        return RubyParser(self.rubyPath).parseHomepageUrl()
+
+    @cached_property
+    def dependencies(self) -> set[str]:
+        ''' Extract dependencies from ruby file '''
+        return RubyParser(self.rubyPath).parse().dependencies
+
+    @cached_property
+    def isKegOnly(self) -> bool:
+        ''' Check if package is keg-only '''
+        return RubyParser(self.rubyPath).parseKegOnly()
+
+    # Symlink processing
+
+    @cached_property
+    def _gatherBinaries(self) -> list[str]:
         ''' Binary paths in `cellar/<pkg>/<version>/bin/...` '''
-        path = os.path.join(self.path, version, 'bin')
+        path = os.path.join(self.path, 'bin')
         if os.path.isdir(path):
             return [x.path for x in os.scandir(path) if os.access(x, os.X_OK)]
         return []
 
     def link(
-        self, version: str, *, noExe: bool = False, dryRun: bool = False,
+        self, *, noExe: bool = False, dryRun: bool = False,
     ) -> None:
         ''' create symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
-        assert version, 'version is required'
-        verRoot = os.path.join(self.path, version)
-        if not os.path.isdir(verRoot):
+        if not self.installed:
             raise RuntimeError('Package not installed')
 
         if not dryRun:
-            self.__dict__.pop('optLink', None)  # clear cached_property
-            if not noExe:
-                self.__dict__.pop('binLinks', None)  # clear cached_property
+            self.pkg._resetCachedProperty(inclBin=not noExe)
 
-        verLink = os.path.join(Cellar.OPT, self.name)
-        queue = [LinkTarget(verLink, verRoot + '/')]
+        versLink = os.path.join(Cellar.OPT, self.pkg.name)
+        queue = [LinkTarget(versLink, self.path + '/')]
 
-        for exePath in [] if noExe else self._gatherBinaries(version):
+        for exePath in [] if noExe else self._gatherBinaries:
             # dynamic link on opt instead of direct
-            dynLink = exePath.replace(verRoot, verLink, 1)
+            dynLink = exePath.replace(self.path, versLink, 1)
             queue.append(LinkTarget(
                 os.path.join(Cellar.BIN, os.path.basename(exePath)), dynLink))
 
@@ -1125,17 +1164,22 @@ class LocalPackage:
                 if not dryRun:
                     os.symlink(relTgt, link.path)
 
+    # Custom config files
+
+    def setDigest(self, digest: str) -> None:
+        ''' Copy digest of tar file into install dir '''
+        with open(os.path.join(self.path, '.brew', 'digest'), 'w') as fp:
+            fp.write(digest)
+
     # Post-install fix
 
-    def fix(self, version: str) -> None:
+    def fix(self) -> None:
         ''' Re-link dylibs and fix time of symlinks '''
-        verRoot = os.path.join(self.path, version)
-
-        if not os.path.isfile(self.rubyPath(version)):
-            Log.error('not a brew-package directory', verRoot, summary=True)
+        if not self.installed:
+            Log.error('not a brew-package directory', self.path, summary=True)
             return
 
-        for base, dirs, files in os.walk(verRoot):
+        for base, dirs, files in os.walk(self.path):
             for file in files:
                 fname = os.path.join(base, file)
                 if os.path.islink(fname):
@@ -1145,7 +1189,7 @@ class LocalPackage:
                 with open(fname, 'rb') as fp:
                     if fp.read(4) != b'\xcf\xfa\xed\xfe':
                         continue
-                Fixer.dylib(fname, self.name, version)
+                Fixer.dylib(fname, self.pkg.name, self.version)
 
 
 # -----------------------------------
@@ -1289,12 +1333,9 @@ class Cellar:
         return os.path.join(Cellar.DOWNLOAD, f'{pkg}-{version}.tar.gz')
 
     @staticmethod
-    def installPath(pkg: str, version: str = 'ø') -> str:
-        ''' Returns `@/cellar/<pkg>` or `@/cellar/<pkg>/<version>` '''
-        assert version is not None, 'version cannot be None if passed'
-        if version == 'ø':
-            return os.path.join(Cellar.CELLAR, pkg)
-        return os.path.join(Cellar.CELLAR, pkg, version)
+    def installPath(pkg: str) -> str:
+        ''' Returns `@/cellar/<pkg>` '''
+        return os.path.join(Cellar.CELLAR, pkg)
 
     # Version handling
 
@@ -1319,7 +1360,7 @@ class Cellar:
             forward.direct[pkg.name] = set(
                 dep
                 for ver in pkg.allVersions
-                for dep in pkg.getDependencies(ver)
+                for dep in pkg.version(ver).dependencies
             )
         return DependencyTree(forward)
 
@@ -1527,20 +1568,22 @@ class InstallQueue:
             if bundle and not self.dryRun:
                 # post-install stuff
                 pkg = LocalPackage(bundle.package)
-                pkg.setDigest(bundle.version, File.sha256(tar))
                 pkg.setPrimary(i == total)
-                # relink dylibs
-                pkg.fix(bundle.version)
+                vpkg = pkg.version(bundle.version)
+                vpkg.setDigest(File.sha256(tar))
+                vpkg.fix()  # relink dylibs
 
                 if skipLink:
                     continue
-                if pkg.isKegOnly(bundle.version):
+
+                if vpkg.isKegOnly:
                     Log.warn('keg-only, must link manually ({}, {})'.format(
-                        pkg.name, bundle.version), summary=True)
-                else:
-                    withBin = Env.LINK_BINARIES if linkExe is None else linkExe
-                    pkg.unlink()
-                    pkg.link(bundle.version, noExe=not withBin)
+                        pkg.name, vpkg.version), summary=True)
+                    continue
+
+                withBin = Env.LINK_BINARIES if linkExe is None else linkExe
+                pkg.unlink()
+                vpkg.link(noExe=not withBin)
         Log.endCounter()
         Log.dumpErrorSummary()
 
@@ -1684,7 +1727,7 @@ class UninstallQueue:
     def printUninstallQueue(self) -> None:
         ''' Print list of `==> will remove X.` '''
         for pkg in self.uninstallQueue:
-            Log.main(f'==> will remove {pkg}.')
+            Log.main(f'==> will remove {pkg.name}.')
 
     def printSkipped(self) -> None:
         ''' Print list of `skip X. used by: {deps}` '''
