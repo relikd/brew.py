@@ -186,7 +186,7 @@ def cli_fetch(args: ArgParams) -> None:
 # https://docs.brew.sh/Manpage#list-ls-options-installed_formulainstalled_cask-
 def cli_list(args: ArgParams) -> None:
     ''' List installed packages. '''
-    infos = Cellar.infoAll(args.packages, assertInstalled=True)
+    infos = Cellar.infoAll(assertInstalled=True)
     if args.multiple:
         infos = [x for x in infos if len(x.verAll) > 1]
     if args.pinned:
@@ -510,7 +510,6 @@ def parseArgs() -> ArgParams:
 
     # list
     cmd = cli.subcommand('list', cli_list, aliases=['ls'])
-    cmd.arg('packages', nargs='*', help='Brew package name')
     cmd.arg_bool('--versions', help='Include version numbers in list')
     cmd.arg_bool('-1', help='''
         Force output to be one entry per line.
