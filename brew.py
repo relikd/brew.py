@@ -207,6 +207,29 @@ def cli_list(args: ArgParams) -> None:
                              plainList=not Env.IS_TTY or args.__dict__['1'])
 
 
+# https://docs.brew.sh/Manpage#outdated-options-formulacask-
+def cli_outdated(args: ArgParams) -> None:
+    ''' Show packages with an updated version available. '''
+    hasUpdate = False
+    for pkg in Cellar.infoAll():
+        if args.all or pkg.primary:
+            if pkg.pinned:
+                update = False
+                onlineVer = '[pinned]'
+            else:
+                onlineVer = Brew.info(pkg.name, force=args.force).version
+                update = onlineVer not in pkg.allVersions
+
+            hasUpdate |= update
+            if update or args.unchanged:
+                op = '<' if update else '='
+                Log.info('{} ({}) {} {}'.format(
+                    pkg.name, ', '.join(pkg.allVersions), op, onlineVer))
+    if not hasUpdate:
+        Log.info('all packages{} are up to date.'.format(
+            ' and dependencies' if args.all else ''))
+
+
 # https://docs.brew.sh/Manpage#deps-options-formulacask-
 def cli_deps(args: ArgParams) -> None:
     ''' Show dependencies for package. '''
@@ -520,6 +543,15 @@ def parseArgs() -> ArgParams:
         Only show packages with multiple versions installed''')
     cmd.arg_bool('--pinned', help='''
         List only pinned packages. See also pin, unpin.''')
+
+    # outdated
+    cmd = cli.subcommand('outdated', cli_outdated)
+    cmd.arg_bool('-f', '--force', help='''
+        Ignore cache to request latest online version (usually not needed)''')
+    cmd.arg_bool('-a', '--all', help='''
+        Include all dependencies while checking for outdated versions''')
+    cmd.arg_bool('-v', '--verbose', dest='unchanged', help='''
+        List all packages in output, even they are up-to-date''')
 
     # deps
     cmd = cli.subcommand('deps', cli_deps)
@@ -1096,7 +1128,7 @@ class LocalPackageVersion:
         assert version, 'version is required'
         self.pkg = pkg
         self.version = version
-        self.path = os.path.join(pkg.path, version)  # type: str
+        self.path = os.path.join(pkg.path, version)
 
     @cached_property
     def installed(self) -> bool:
@@ -2540,9 +2572,6 @@ if __name__ == '__main__':
     main()
 
 # TODO:
-
-#  Show formulae with an updated version available
-# https://docs.brew.sh/Manpage#outdated-options-formulacask-
 
 # https://docs.brew.sh/Manpage#reinstall-options-formulacask-
 
