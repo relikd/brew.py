@@ -21,6 +21,7 @@ from io import StringIO  # Log summary
 from tarfile import TarInfo, open as openTarfile
 from urllib import request as Req  # build_opener, install_opener, urlretrieve
 from urllib.error import HTTPError
+from configparser import ConfigParser as IniFile
 from webbrowser import open as launchBrowser
 from functools import cached_property
 from argparse import (
@@ -36,11 +37,7 @@ from typing import (
 
 class Env:
     IS_TTY = sys.stdout.isatty()
-    MAX_AGE_CACHE = 5 * 24 * 60 * 60  # 5 days
-    MAX_AGE_DOWNLOAD = int(os.environ.get('BREW_PY_CLEANUP_MAX_AGE_DAYS', 21))
     CELLAR_PATH = os.environ.get('BREW_PY_CELLAR', '').rstrip('/')
-    LINK_BINARIES = os.environ.get('BREW_PY_LINK_BINARIES', '1').lower() in (
-        'true', '1', 'yes', 'y', 'on')
 
 
 def main() -> None:
@@ -506,8 +503,7 @@ def cli_cleanup(args: ArgParams) -> None:
     '''
     Remove old versions of installed packages.
     If arguments are specified, only do this for the given packages.
-    Removes all downloads more than 21 days old.
-    This can be adjusted with $BREW_PY_CLEANUP_MAX_AGE_DAYS.
+    Removes all downloads older than 21 days (see config.ini).
     '''
     total_savings = 0
     packages = Cellar.infoAll(args.packages, assertInstalled=True)
@@ -517,10 +513,7 @@ def cli_cleanup(args: ArgParams) -> None:
 
     if not args.packages:
         Log.info('==> Removing cached downloads')
-        maxage = Env.MAX_AGE_DOWNLOAD if args.prune is None else args.prune
-        for file in os.scandir(Cellar.DOWNLOAD):
-            if File.isOutdated(file.path, maxage * 24 * 60 * 60):
-                total_savings += File.remove(file.path, dryRun=args.dry)
+        total_savings += Cellar.cleanup(args.prune, dryRun=args.dry)
 
     # remove all non-active versions
     Log.info('==> Removing old versions')
@@ -668,8 +661,8 @@ def parseArgs() -> ArgParams:
     cmd.arg_bool('--no-dependencies', help='Do not install dependencies')
     cmd.arg_bool('--skip-link', help='Install but skip linking to opt')
     cmd.arg('--binaries', action=BooleanOptionalAction, help='''
-        Enable/disable linking of helper executables (default: enabled).
-        Can be set with $BREW_PY_LINK_BINARIES.''')
+        Enable/disable linking of helper executables (default: enabled,
+        see config.ini)''')
     cmd.arg('-arch', help='''Manually set platform architecture
         (e.g. 'arm64_sequoia' (brew), 'arm64|darwin|macOS 15' (ghcr))''')
 
@@ -726,7 +719,7 @@ def parseArgs() -> ArgParams:
     cmd = cli.subcommand('cleanup', cli_cleanup, aliases=['clean'])
     cmd.arg('packages', nargs='*', help='Brew package name')
     cmd.arg('--prune', type=int, help='''
-        Remove all cache files older than specified days''')
+        Remove all cache files and downloads older than specified days''')
     cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         Show what would be removed, but do not actually remove anything''')
 
@@ -849,6 +842,63 @@ class Arch:
             Arch._SOFTWARE_VERSIONS.setdefault('xcode', Bash.getVersion(
                 ['xcodebuild', '-version'], r'Xcode ([\d.]+)'))
         return currentVer >= [int(x) for x in version.split('.')]
+
+
+# -----------------------------------
+#  Config
+# -----------------------------------
+
+class Config:
+    class Install(NamedTuple):
+        LINK_BIN_PRIM: bool
+        LINK_BIN_DEPS: bool
+
+    class Cleanup(NamedTuple):
+        DOWNLOAD: int
+        CACHE: int
+        AUTH: int
+
+    INSTALL: Install
+    CLEANUP: Cleanup
+
+    @staticmethod
+    def load(fname: str) -> None:
+        if not os.path.exists(fname):
+            with open(fname, 'w') as fp:
+                fp.write('''
+[install]
+; whether install should link binaries of main package (user-installed)
+link_bin_primary = yes  ; default: yes
+; whether install should link binaries of dependencies
+link_bin_dependency = yes  ; default: yes
+
+[cleanup]
+; unit: s|m|h|d (secs, mins, hours, days)
+download = 21d  ; default: 21d
+cache = 5d  ; default: 5d
+auth = 365d  ; default: 365d
+''')
+        ini = IniFile(inline_comment_prefixes=(';', '#'))
+        ini.read(fname)
+
+        def timed(value: str) -> int:
+            unit = value[-1].lower()
+            mul = {'s': 1, 'm': 60, 'h': 60 * 60, 'd': 24 * 60 * 60}.get(unit)
+            if not mul:
+                raise AttributeError(f'Unkown time unit "{value}" in config')
+            return int(value[:-1]) * mul
+
+        sec = ini['install']
+        Config.INSTALL = Config.Install(
+            LINK_BIN_PRIM=sec.getboolean('link_bin_primary', fallback=True),
+            LINK_BIN_DEPS=sec.getboolean('link_bin_dependency', fallback=True),
+        )
+        sec = ini['cleanup']
+        Config.CLEANUP = Config.Cleanup(
+            DOWNLOAD=timed(sec.get('download', '21d')),
+            CACHE=timed(sec.get('cache', '5d')),
+            AUTH=timed(sec.get('auth', 'never')),
+        )
 
 
 # -----------------------------------
@@ -1434,17 +1484,38 @@ class Cellar:
         for x in (Cellar.BIN, Cellar.CACHE, Cellar.CELLAR, Cellar.DOWNLOAD,
                   Cellar.OPT):
             os.makedirs(x, exist_ok=True)
-        Cellar.cleanup(Env.MAX_AGE_CACHE)
+
+        Config.load(os.path.join(Cellar.ROOT, 'config.ini'))  # after makedirs
+        Cellar.cleanup(quiet=True)  # after Config.load()
 
     @staticmethod
-    def cleanup(maxage: int) -> None:
-        ''' Check all files in cache and delete outdated. '''
+    def cleanup(
+        maxAgeDays: 'int|None' = None, *,
+        dryRun: bool = False, quiet: bool = False,
+    ) -> int:
+        ''' Delete outdated files in cache and download. '''
+        savings = 0
+
+        if maxAgeDays is not None:
+            maxAgeDays *= 24 * 60 * 60  # days
+            if maxAgeDays == 0:
+                maxAgeDays = 1
+
         for file in os.scandir(Cellar.CACHE):
-            # TODO: different maxage for auth-token?
             if file.name == '_auth-token.json':
-                continue  # TODO: test how long the token is valid
+                # TODO: test how long the token is valid
+                maxage = Config.CLEANUP.AUTH
+            else:
+                maxage = maxAgeDays or Config.CLEANUP.CACHE
+
             if File.isOutdated(file.path, maxage):
-                os.remove(file.path)
+                savings += File.remove(file.path, dryRun=dryRun, quiet=quiet)
+
+        maxage = maxAgeDays or Config.CLEANUP.DOWNLOAD
+        for file in os.scandir(Cellar.DOWNLOAD):
+            if File.isOutdated(file.path, maxage):
+                savings += File.remove(file.path, dryRun=dryRun, quiet=quiet)
+        return savings
 
     # Paths
 
@@ -1690,14 +1761,27 @@ class InstallQueue:
         total = len(self.installQueue)
         Log.beginCounter(total)
         Log.beginErrorSummary()
+
+        # flags
+        linkPrim = Config.INSTALL.LINK_BIN_PRIM if linkExe is None else linkExe
+        linkDeps = Config.INSTALL.LINK_BIN_DEPS if linkExe is None else linkExe
+
         # reverse to install main package last (allow re-install until success)
         for i, tar in enumerate(reversed(self.installQueue), 1):
             bundle = TarPackage(tar).extract(dryRun=self.dryRun)
-            if bundle and not self.dryRun:
+            if bundle:
+                isPrimary = i == total
+                linkBin = linkPrim if isPrimary else linkDeps
+
+                if self.dryRun:
+                    if not linkBin:
+                        Log.info('will NOT link binaries')
+                    continue
+
                 # post-install stuff
                 pkg = LocalPackage(bundle.package)
                 if not isUpgrade:
-                    pkg.setPrimary(i == total)
+                    pkg.setPrimary(isPrimary)
 
                 vpkg = pkg.version(bundle.version)
                 vpkg.setDigest(File.sha256(tar))
@@ -1713,9 +1797,9 @@ class InstallQueue:
                         pkg.name, vpkg.version), summary=True)
                     continue
 
-                withBin = Env.LINK_BINARIES if linkExe is None else linkExe
                 pkg.unlink()
-                vpkg.link(linkBin=withBin)
+                vpkg.link(linkBin=linkBin)
+
         Log.endCounter()
         Log.dumpErrorSummary()
 
