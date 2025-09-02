@@ -281,11 +281,14 @@ def cli_upgrade(args: ArgParams) -> None:
                 pkg.unlink(unlinkOpt=True, unlinkBin=False, quiet=True)
                 vpkg.link(linkOpt=True, linkBin=False)
 
+            if args.keep:
+                continue
+
             # remove old version immediately
             if pkg.pinned:
                 Log.warn(f'keeping old version of {pkgName} (reason: pinned)')
             else:
-                pkg.cleanup(quiet=True)
+                pkg.cleanup()
 
 
 # https://docs.brew.sh/Manpage#deps-options-formulacask-
@@ -610,6 +613,7 @@ def parseArgs() -> ArgParams:
     # upgrade
     cmd = cli.subcommand('upgrade', cli_upgrade)
     cmd.arg('packages', nargs='*', help='Brew package name')
+    cmd.arg_bool('-k', '--keep', help='Do not remove outdated versions')
     cmd.arg_bool('-f', '--force', help='''
         Ignore cache to request latest online version (usually not needed)''')
     cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
@@ -1151,6 +1155,8 @@ class LocalPackage:
     def readOptLink(self, *, ensurePkg: bool) -> 'LinkTarget|None':
         ''' Read `@/opt/<pkg>` link. Returns `None` if non-exist '''
         pkgPath = (self.path + '/') if ensurePkg else ''
+        # TODO: should opt-links have "@version" suffix or not?
+        # if no, fix-dylib needs adjustments
         return LinkTarget.read(os.path.join(Cellar.OPT, self.name), pkgPath)
 
     @cached_property
@@ -2667,16 +2673,3 @@ class Log:
 
 if __name__ == '__main__':
     main()
-
-# TODO:
-
-#  List all the current tapped repositories (taps)
-#  Tap a formula repository from the specified URL
-#  (default: https://github.com/user/homebrew-repo)
-# https://docs.brew.sh/Manpage#tap-options-userrepo-url  ????
-
-#  Remove the given tap from the repository
-# https://docs.brew.sh/Manpage#untap---force-tap-  ????
-
-#  Fetch latest version of homebrew and formula
-# https://docs.brew.sh/Manpage#update-up-options
