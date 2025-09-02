@@ -1922,6 +1922,12 @@ class UninstallQueue:
         skipped = depTree.reverse.filterDifference(secondary, hidden)
         removed = rawUninstall.difference(skipped)
 
+        # skip dependencies which were installed by user on request
+        primary = set(x for x in removed if LocalPackage(x).primary)
+        primary = primary.difference(deletePkgs)
+        removed -= primary
+        skipped |= primary
+
         # recursively ignore dependencies that rely on already ignored
         while deps := depTree.reverse.filterIntersection(removed, skipped):
             skipped.update(deps)
@@ -1933,8 +1939,7 @@ class UninstallQueue:
         setWarnings(hidden)
         setUninstallQueue(sorted(removed))
         irrelevant = removed.union(hiddenPkgs)
-        self.skips = {pkg: deps for pkg in skipped
-                      if (deps := getDeps(pkg) - irrelevant)}
+        self.skips = {pkg: getDeps(pkg) - irrelevant for pkg in skipped}
 
     def validateQueue(self) -> None:
         ''' Check for direct dependencies. If found, fail with exit code 1 '''
@@ -1951,7 +1956,10 @@ class UninstallQueue:
     def printSkipped(self) -> None:
         ''' Print list of `skip X. used by: {deps}` '''
         for pkg, deps in sorted(self.skips.items()):
-            Log.warn(f'skip {pkg}. used by:', ', '.join(sorted(deps)))
+            if LocalPackage(pkg).primary:
+                Log.warn(f'skip {pkg}. (primary install)')
+            else:
+                Log.warn(f'skip {pkg}. used by:', ', '.join(sorted(deps)))
 
     def uninstall(self, *, dryRun: bool) -> None:
         ''' Remove symlinks and package directories (or pretend to do) '''
