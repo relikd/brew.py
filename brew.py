@@ -1769,36 +1769,38 @@ class InstallQueue:
         # reverse to install main package last (allow re-install until success)
         for i, tar in enumerate(reversed(self.installQueue), 1):
             bundle = TarPackage(tar).extract(dryRun=self.dryRun)
-            if bundle:
-                isPrimary = i == total
-                linkBin = linkPrim if isPrimary else linkDeps
+            if not bundle:
+                continue  # install error
 
-                if self.dryRun:
-                    if not linkBin:
-                        Log.info('will NOT link binaries')
-                    continue
+            isPrimary = i == total
+            linkBin = linkPrim if isPrimary else linkDeps
 
-                # post-install stuff
-                pkg = LocalPackage(bundle.package)
-                if not isUpgrade:
-                    pkg.setPrimary(isPrimary)
+            if self.dryRun:
+                if not linkBin:
+                    Log.info('will NOT link binaries')
+                continue
 
-                vpkg = pkg.version(bundle.version)
-                vpkg.setDigest(File.sha256(tar))
-                vpkg.fix()  # relink dylibs
+            # post-install stuff
+            pkg = LocalPackage(bundle.package)
+            if not isUpgrade:
+                pkg.setPrimary(isPrimary)
 
-                self.finished.append((pkg.name, vpkg.version))
+            vpkg = pkg.version(bundle.version)
+            vpkg.setDigest(File.sha256(tar))
+            vpkg.fix()  # relink dylibs
 
-                if skipLink or isUpgrade:
-                    continue
+            self.finished.append((pkg.name, vpkg.version))
 
-                if vpkg.isKegOnly:
-                    Log.warn('keg-only, must link manually ({}, {})'.format(
-                        pkg.name, vpkg.version), summary=True)
-                    continue
+            if skipLink or isUpgrade:
+                continue
 
-                pkg.unlink()
-                vpkg.link(linkBin=linkBin)
+            if vpkg.isKegOnly:
+                Log.warn('keg-only, must link manually ({}, {})'.format(
+                    pkg.name, vpkg.version), summary=True)
+                continue
+
+            pkg.unlink()
+            vpkg.link(linkBin=linkBin)
 
         Log.endCounter()
         Log.dumpErrorSummary()
