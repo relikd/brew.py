@@ -1360,7 +1360,7 @@ class LocalPackageVersion:
                 with open(fname, 'rb') as fp:
                     if fp.read(4) != b'\xcf\xfa\xed\xfe':
                         continue
-                Fixer.dylib(fname, self.pkg.name, self.version)
+                Fixer.dylib(fname)
 
 
 # -----------------------------------
@@ -1821,15 +1821,16 @@ class Fixer:
         os.utime(fname, (atime, mtime), follow_symlinks=False)
 
     @staticmethod
-    def dylib(fname: str, pkg: str, version: str) -> None:
+    def dylib(fname: str) -> None:
         ''' Rewrite dylib to use relative links '''
         # TLDR:
         # 1) otool -L <file>  // list all linked shared libraries (exe + dylib)
         # 2) install_name_tool -id "newRef" <file>  // only for *.dylib files
         # 3) install_name_tool -change "oldRef" "newRef" <file>  // both types
         # 4) codesign --verify --force --sign - <file>  // resign with no sign
-        repl1 = f'@@HOMEBREW_CELLAR@@/{pkg}/{version}/bin'
-        repl2 = f'@@HOMEBREW_PREFIX@@/cellar/{pkg}/{version}/bin'
+        parentDir = os.path.dirname(fname)
+        repl1 = parentDir.replace(Cellar.CELLAR, '@@HOMEBREW_CELLAR@@', 1)
+        repl2 = parentDir.replace(Cellar.ROOT, '@@HOMEBREW_PREFIX@@', 1)
         atime = os.path.getatime(fname)
         mtime = os.path.getmtime(fname)
 
@@ -1845,7 +1846,7 @@ class Fixer:
             else:
                 continue  # probably fine (incl. @rpath, @executable_path)
 
-            newRef = '@executable_path/' + newRef
+            newRef = '@loader_path/' + newRef
             if not did_change:
                 Log.info('  fix dylib', Cellar.shortPath(fname))
             Log.debug('    OLD:', oldRef)
