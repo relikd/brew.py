@@ -1542,14 +1542,15 @@ class InstallQueue:
     def addRecursive(self, pkg: str) -> None:
         ''' Recursive online search for dependencies '''
         queue = [pkg]
-        done = set(pkg)
+        done = set(self._missingDigest).union(
+            x.package for x in self.downloadQueue)
         while queue:
             pkg = queue.pop(0)
-            bundle = Brew.info(pkg)
-            self.add(pkg, bundle.version, bundle.digest)
-            subdeps = bundle.dependencies or []
-            queue.extend(x for x in subdeps if x not in done)
-            done.update(subdeps)
+            if pkg not in done:
+                done.add(pkg)
+                bundle = Brew.info(pkg)
+                queue.extend(bundle.dependencies or [])
+                self.add(pkg, bundle.version, bundle.digest)
 
     def add(self, pkg: str, version: str, digest: 'str|None') -> None:
         ''' Check if specific version exists and add to download queue '''
