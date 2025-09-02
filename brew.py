@@ -1096,14 +1096,14 @@ class LocalPackage:
         if unlinkOpt:
             rv += filter(None, [self.readOptLink(ensurePkg=False)])
 
-        if not dryRun:
-            self._resetCachedProperty(optLink=unlinkOpt, binLink=unlinkBin)
-
         for lnk in rv:
             if not quiet:
                 Log.info(f'  unlink {Cellar.shortPath(lnk.path)} -> {lnk.raw}')
             if not dryRun:
                 os.remove(lnk.path)
+
+        if not dryRun:
+            self._resetCachedProperty(optLink=unlinkOpt, binLink=unlinkBin)
         return rv
 
     def _resetCachedProperty(self, *, optLink: bool, binLink: bool) -> None:
@@ -1170,17 +1170,15 @@ class LocalPackageVersion:
 
     def link(
         self, *, linkOpt: bool = True, linkBin: bool = True,
-        dryRun: bool = False,
+        dryRun: bool = False, quiet: bool = False,
     ) -> None:
         ''' create symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
         if not self.installed:
             raise RuntimeError('Package not installed')
 
-        if not dryRun:
-            self.pkg._resetCachedProperty(optLink=linkOpt, binLink=linkBin)
-
-        optLinkPath = os.path.join(Cellar.OPT, self.pkg.name)
         queue = []
+        optLinkPath = os.path.join(Cellar.OPT, self.pkg.name)
+
         if linkOpt:
             queue.append(LinkTarget(optLinkPath, self.path + '/'))
 
@@ -1196,9 +1194,13 @@ class LocalPackageVersion:
             if os.path.islink(link.path) or os.path.exists(link.path):
                 Log.warn(f'skip already existing link: {short}', summary=True)
             else:
-                Log.info(f'  link {short} -> {relTgt}')
+                if not quiet:
+                    Log.info(f'  link {short} -> {relTgt}')
                 if not dryRun:
                     os.symlink(relTgt, link.path)
+
+        if not dryRun:
+            self.pkg._resetCachedProperty(optLink=linkOpt, binLink=linkBin)
 
     # Custom config files
 
@@ -1444,6 +1446,8 @@ class TarPackage:
                     subset.append(x)
                     if not pkg and x.isdir() and x.path.endswith('/.brew'):
                         pkg, version, *_ = x.path.split('/')
+                        if dryRun:
+                            break
                 else:
                     Log.error(f'prohibited tar entry "{x.path}" in', shortPath,
                               summary=True)
@@ -2202,7 +2206,7 @@ class File:
         return files, size
 
     @staticmethod
-    def remove(path: str, *, dryRun: bool) -> int:
+    def remove(path: str, *, dryRun: bool = False, quiet: bool = False) -> int:
         '''Delete file or folder. Calculate and print size. Optional dry-run'''
         isdir = os.path.isdir(path)
         if isdir:
@@ -2210,11 +2214,12 @@ class File:
         else:
             size = 0 if os.path.islink(path) else os.path.getsize(path)
 
-        Log.main('{}: {} ({}{})'.format(
-            'Would remove' if dryRun else 'Removing',
-            Cellar.shortPath(path),
-            f'{files} files, ' if isdir else '',
-            Utils.humanSize(size)))
+        if not quiet:
+            Log.main('{}: {} ({}{})'.format(
+                'Would remove' if dryRun else 'Removing',
+                Cellar.shortPath(path),
+                f'{files} files, ' if isdir else '',
+                Utils.humanSize(size)))
         if not dryRun:
             shutil.rmtree(path) if isdir else os.remove(path)
         return size
