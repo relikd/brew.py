@@ -572,18 +572,16 @@ def parseArgs() -> ArgParams:
     cmd.arg('package', help='Brew package name')
 
     # fetch
-    cmd = cli.subcommand('fetch', cli_fetch)
+    cmd = cli.subcommand('fetch', cli_fetch, aliases=['download', 'bottle'])
     cmd.arg('package', help='Brew package name')
-    cmd.arg('-arch', help='''Download for the given platform architecture.
-        (e.g. 'arm64_sequoia' (brew), 'arm64|darwin|macOS 15' (ghcr))''')
-    cmd.arg('-o', dest='outfile', help='''
-        Output file. (default: download/<pkg>-<version|digest>.tar.gz)''')
     grp = cmd.xor_group()
     grp.arg_bool('-ghcr', help='''
         Download from ghcr registry instead of Brew.sh''')
     grp.arg('-tag', help='Manually provide tag / version (uses ghcr)')
     grp.arg('-digest', help='''
         Manually provide digest hash (direct download, skips tag query)''')
+    cmd.arg('-arch', help='''Download for the given platform architecture.
+        (e.g. 'arm64_sequoia' (brew), 'arm64|darwin|macOS 15' (ghcr))''')
     cmd.epilog = '''
     If no -ghcr/-tag/-digest is provided, use DIGEST hash of Brew.sh.
     Otherwise, DIGEST hash will be queried from Github registry.'''
@@ -600,7 +598,7 @@ def parseArgs() -> ArgParams:
         List only pinned packages. See also pin, unpin.''')
 
     # outdated
-    cmd = cli.subcommand('outdated', cli_outdated)
+    cmd = cli.subcommand('outdated', cli_outdated, aliases=['old'])
     cmd.arg_bool('-f', '--force', help='''
         Ignore cache to request latest online version (usually not needed)''')
     cmd.arg_bool('-a', '--all', help='''
@@ -609,7 +607,7 @@ def parseArgs() -> ArgParams:
         List all packages in output, even they are up-to-date''')
 
     # upgrade
-    cmd = cli.subcommand('upgrade', cli_upgrade)
+    cmd = cli.subcommand('upgrade', cli_upgrade, aliases=['update', 'up'])
     cmd.arg('packages', nargs='*', help='Brew package name')
     cmd.arg_bool('-k', '--keep', help='Do not remove outdated versions')
     cmd.arg_bool('-f', '--force', help='''
@@ -662,18 +660,18 @@ def parseArgs() -> ArgParams:
         This is the default when output is not to a terminal.''')
 
     # install
-    cmd = cli.subcommand('install', cli_install)
+    cmd = cli.subcommand('install', cli_install, aliases=['add'])
     cmd.arg('package', help='Brew package name')
     cmd.arg_bool('-f', '--force', help='Install even if already installed')
     cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         Show what would be installed, but do not actually install anything''')
-    cmd.arg('-arch', help='''Manually set platform architecture
-        (e.g. 'arm64_sequoia' (brew), 'arm64|darwin|macOS 15' (ghcr))''')
     cmd.arg_bool('--no-dependencies', help='Do not install dependencies')
     cmd.arg_bool('--skip-link', help='Install but skip linking to opt')
     cmd.arg('--binaries', action=BooleanOptionalAction, help='''
         Enable/disable linking of helper executables (default: enabled).
         Can be set with $BREW_PY_LINK_BINARIES.''')
+    cmd.arg('-arch', help='''Manually set platform architecture
+        (e.g. 'arm64_sequoia' (brew), 'arm64|darwin|macOS 15' (ghcr))''')
 
     # uninstall
     cmd = cli.subcommand('uninstall', cli_uninstall, aliases=['remove', 'rm'])
@@ -681,14 +679,16 @@ def parseArgs() -> ArgParams:
     cmd.arg_bool('-y', '--yes', help='Do not ask for confirmation')
     cmd.arg_bool('-f', '--force', help='''
         Remove package even if it is a direct dependency of another package''')
-    cmd.arg('--ignore', nargs='*', default=[], help='''
-        Treat IGNORE packages as if they are not installed.
-        Allow uninstall of packages which are dependency of IGNORE package.''')
-    cmd.arg_bool('--no-dependencies', help='''
-        Do not uninstall any of the dependencies of package''')
-    cmd.arg_bool('--leaves', help='Show top-most dependencies, not direct')
     cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         List packages which would be uninstalled, without actually removing''')
+    cmd.arg_bool('--leaves', help='''
+        Print top-most dependencies instead of direct dependencies''')
+    cmd.arg_bool('--no-dependencies', help='''
+        Do not uninstall any of the dependencies of package''')
+    cmd.arg('--ignore', nargs='*', default=[], help='''
+        Treat IGNORE packages as if they are not installed. Will remove all
+        dependencies which (after uninstall) are used exclusively by IGNORE.
+        This will remove more packages than --force.''')
 
     # link
     cmd = cli.subcommand('link', cli_link, aliases=['ln'])
@@ -723,7 +723,7 @@ def parseArgs() -> ArgParams:
     cmd.arg('packages', nargs='+', help='Brew package name')
 
     # cleanup
-    cmd = cli.subcommand('cleanup', cli_cleanup)
+    cmd = cli.subcommand('cleanup', cli_cleanup, aliases=['clean'])
     cmd.arg('packages', nargs='*', help='Brew package name')
     cmd.arg('--prune', type=int, help='''
         Remove all cache files older than specified days''')
@@ -1678,8 +1678,8 @@ class InstallQueue:
         Log.endCounter()
 
     def install(
-        self, *,
-        skipLink: bool = True, linkExe: bool = True, isUpgrade: bool = False,
+        self, *, skipLink: bool = True, linkExe: 'bool|None' = None,
+        isUpgrade: bool = False,
     ) -> None:
         ''' Install all dependencies in reverse order (main package last) '''
         Log.info()
