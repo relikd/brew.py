@@ -226,8 +226,66 @@ def cli_outdated(args: ArgParams) -> None:
                 Log.info('{} ({}) {} {}'.format(
                     pkg.name, ', '.join(pkg.allVersions), op, onlineVer))
     if not hasUpdate:
-        Log.info('all packages{} are up to date.'.format(
-            ' and dependencies' if args.all else ''))
+        Log.info('all {} are up to date.'.format(
+            'packages and dependencies' if args.all else 'primary packages'))
+
+
+# https://docs.brew.sh/Manpage#upgrade-options-installed_formulainstalled_cask-
+def cli_upgrade(args: ArgParams) -> None:
+    '''
+    Upgrade outdated packages.
+    Will delete old versions, unless package is pinned.
+    Pinned packages are skipped by default but can be upgraded if provided
+    '''
+    if args.packages and args.all:
+        Log.error('You cannot use both, use either <package> param or --all')
+        return
+
+    queue = InstallQueue(dryRun=args.dry, force=False)
+
+    for pkg in Cellar.infoAll(args.packages, assertInstalled=True):
+        userRequested = pkg.name in args.packages
+        if not (pkg.primary or userRequested or args.all):
+            continue
+        if pkg.pinned and not (userRequested or args.pinned):
+            continue
+
+        bundle = Brew.info(pkg.name, force=args.force)
+        if bundle.version in pkg.allVersions:
+            continue
+
+        Log.info('{} ({}) -> {}'.format(
+            pkg.name, ', '.join(pkg.allVersions), bundle.version))
+
+        if args.all or args.no_dependencies:
+            queue.add(pkg.name, bundle.version, bundle.digest)
+        else:
+            queue.addRecursive(pkg.name)
+
+    if not queue.downloadQueue:
+        Log.info('All packages are up-to-date')
+        return
+
+    queue.validateQueue()
+    queue.download()
+    queue.install(isUpgrade=True)
+
+    if not args.dry:
+        Log.info()
+        Log.info('==> Post-upgrade')
+        for pkgName, ver in queue.finished:
+            pkg = LocalPackage(pkgName)
+            vpkg = pkg.version(ver)
+
+            if not vpkg.isKegOnly:  # does not exist until after install
+                pkg.unlink(unlinkOpt=True, unlinkBin=False, quiet=True)
+                vpkg.link(linkOpt=True, linkBin=False)
+
+            # remove old version immediately
+            if pkg.pinned:
+                Log.warn(f'keeping old version of {pkgName} (reason: pinned)')
+            else:
+                pkg.cleanup(quiet=True)
 
 
 # https://docs.brew.sh/Manpage#deps-options-formulacask-
@@ -548,6 +606,21 @@ def parseArgs() -> ArgParams:
         Include all dependencies while checking for outdated versions''')
     cmd.arg_bool('-v', '--verbose', dest='unchanged', help='''
         List all packages in output, even they are up-to-date''')
+
+    # upgrade
+    cmd = cli.subcommand('upgrade', cli_upgrade)
+    cmd.arg('packages', nargs='*', help='Brew package name')
+    cmd.arg_bool('-f', '--force', help='''
+        Ignore cache to request latest online version (usually not needed)''')
+    cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
+        Show what would be upgraded without doing anything''')
+    cmd.arg_bool('-a', '--all', help='''
+        Upgrade all dependencies regardless of primary package upgrade''')
+    cmd.arg_bool('--pinned', help='Include pinned packages in upgrade')
+    cmd.arg_bool('--no-dependencies', help='''
+        Do not upgrade dependencies (overridden by --all)''')
+    cmd.arg('-arch', help='''Manually set platform architecture
+        (e.g. 'arm64_sequoia' (brew), 'arm64|darwin|macOS 15' (ghcr))''')
 
     # deps
     cmd = cli.subcommand('deps', cli_deps)
@@ -1533,6 +1606,7 @@ class InstallQueue:
         self._missingDigest = []  # type: list[str]  # pkg
         self.downloadQueue = []  # type: list[InstallQueue.Item]
         self.installQueue = []  # type: list[str]  # tar file path
+        self.finished = []  # type: list[tuple[str, str]]  # [(pkg, version)]
 
     def init(self, pkgOrFile: str, *, recursive: bool) -> None:
         ''' Auto-detect input type and install from tar-file or brew online '''
@@ -1599,7 +1673,10 @@ class InstallQueue:
                 x.package, x.version, x.digest, dryRun=self.dryRun))
         Log.endCounter()
 
-    def install(self, *, skipLink: bool, linkExe: bool) -> None:
+    def install(
+        self, *,
+        skipLink: bool = True, linkExe: bool = True, isUpgrade: bool = False,
+    ) -> None:
         ''' Install all dependencies in reverse order (main package last) '''
         Log.info()
         Log.info('==> Install ...')
@@ -1615,12 +1692,16 @@ class InstallQueue:
             if bundle and not self.dryRun:
                 # post-install stuff
                 pkg = LocalPackage(bundle.package)
-                pkg.setPrimary(i == total)
+                if not isUpgrade:
+                    pkg.setPrimary(i == total)
+
                 vpkg = pkg.version(bundle.version)
                 vpkg.setDigest(File.sha256(tar))
                 vpkg.fix()  # relink dylibs
 
-                if skipLink:
+                self.finished.append((pkg.name, vpkg.version))
+
+                if skipLink or isUpgrade:
                     continue
 
                 if vpkg.isKegOnly:
@@ -2589,8 +2670,6 @@ if __name__ == '__main__':
 
 # TODO:
 
-# https://docs.brew.sh/Manpage#reinstall-options-formulacask-
-
 #  List all the current tapped repositories (taps)
 #  Tap a formula repository from the specified URL
 #  (default: https://github.com/user/homebrew-repo)
@@ -2601,7 +2680,3 @@ if __name__ == '__main__':
 
 #  Fetch latest version of homebrew and formula
 # https://docs.brew.sh/Manpage#update-up-options
-
-#  Upgrade all outdated and unpinned brews
-#  Upgrade only the specified brew
-# https://docs.brew.sh/Manpage#upgrade-options-installed_formulainstalled_cask-
