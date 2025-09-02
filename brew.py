@@ -294,15 +294,15 @@ def cli_deps(args: ArgParams) -> None:
     depTree = Cellar.getDependencyTree()
     depTree.forward.assertExist(args.packages)
 
-    choice = args.packages or sorted(depTree.forward)
-
     if args.dot:
         depTree.forward.dotGraph(args.packages or depTree.reverse.directEnd())
     elif args.tree:
-        depTree.forward.printTree(choice, depth=args.depth)
+        depTree.forward.printTree(
+            args.packages or sorted(depTree.forward), depth=args.depth)
     else:
         depTree.forward.printFlat(
-            choice, ' => ', leaves=args.leaves, direct=args.depth == 1)
+            args.packages or sorted(depTree.forward), ' => ',
+            leaves=args.leaves, direct=args.depth == 1)
 
 
 # https://docs.brew.sh/Manpage#upgrade-options-installed_formulainstalled_cask-
@@ -312,18 +312,20 @@ def cli_uses(args: ArgParams) -> None:
     depTree.reverse.assertExist(args.packages)
 
     if args.missing:
-        choice = sorted(depTree.getMissing(args.packages))
-    else:
-        choice = args.packages
+        args.packages = sorted(depTree.getMissing(args.packages))
+        if not args.packages:
+            return
 
     if args.dot:
         depTree.reverse.dotGraph(
-            choice or depTree.forward.directEnd(), reverse=True)
+            args.packages or depTree.forward.directEnd(), reverse=True)
     elif args.tree:
-        depTree.reverse.printTree(choice, depth=args.depth)
+        depTree.reverse.printTree(
+            args.packages or sorted(depTree.reverse), depth=args.depth)
     else:
         depTree.reverse.printFlat(
-            choice, ' := ', leaves=args.leaves, direct=args.depth == 1)
+            args.packages or sorted(depTree.reverse), ' := ',
+            leaves=args.leaves, direct=args.depth == 1)
 
 
 # https://docs.brew.sh/Manpage#leaves---installed-on-request---installed-as-dependency
