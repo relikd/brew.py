@@ -464,11 +464,7 @@ def cli_cleanup(args: ArgParams) -> None:
     # remove all non-active versions
     Log.info('==> Removing old versions')
     for pkg in packages:
-        for ver in pkg.inactiveVersions:
-            vpkg = pkg.version(ver)
-            if vpkg.isKegOnly:
-                continue
-            total_savings += File.remove(vpkg.path, dryRun=args.dry)
+        total_savings += pkg.cleanup(dryRun=args.dry)
 
     # should never happen but just in case, remove symlinks which point nowhere
     Log.info('==> Removing dead links')
@@ -998,6 +994,16 @@ class LocalPackage:
             else:
                 Log.info(' * upgrade available {} (installed: {})'.format(
                     onlineVersion, ', '.join(self.allVersions)))
+
+    def cleanup(self, *, dryRun: bool = False, quiet: bool = False) -> int:
+        ''' Delete old, inactive versions and return size of savings '''
+        savings = 0
+        for ver in self.inactiveVersions:
+            vpkg = self.version(ver)
+            if vpkg.isKegOnly:
+                continue
+            savings += File.remove(vpkg.path, dryRun=dryRun, quiet=quiet)
+        return savings
 
     # Version properties on any version
 
