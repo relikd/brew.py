@@ -115,14 +115,14 @@ def cli_info(args: ArgParams) -> None:
     Log.info()
     Log.info(f'{mode}:')
     Log.info(' Digest:')
-    Log.info(Utils.prettyList([manifest.digest or '<architecture not found>']))
+    Log.info(Txt.prettyList([manifest.digest or '<architecture not found>']))
     Log.info(' Dependencies:')
     deps = manifest.dependencies
     if deps is None:
         deps = ['<architecture not found>']
-    Log.info(Utils.prettyList(sorted(deps)) or '  <none>')
+    Log.info(Txt.prettyList(sorted(deps)) or '  <none>')
     Log.info(' Platforms:')
-    Log.info(Utils.prettyList(sorted(manifest.platforms)) or '  <none>')
+    Log.info(Txt.prettyList(sorted(manifest.platforms)) or '  <none>')
 
     if mode == 'Brew':
         Log.info('GHCR:')
@@ -172,7 +172,7 @@ def cli_fetch(args: ArgParams) -> None:
             arch = Arch.GHCR if args.tag or args.ghcr else Arch.BREW
             Log.error(f'architecture "{arch}" not found (use -arch).')
             Log.info('Available platforms:')
-            Log.info(Utils.prettyList(manifest.platforms))
+            Log.info(Txt.prettyList(manifest.platforms))
             exit(1)
 
     Log.info(' tag:', tag)
@@ -423,7 +423,7 @@ def cli_link(args: ArgParams) -> None:
             args.version = pkg.allVersions[0]
         else:
             Log.info('Multiple versions found:')
-            Log.info(Utils.prettyList(pkg.allVersions))
+            Log.info(Txt.prettyList(pkg.allVersions))
             Log.error('no package version provided.')
             return
 
@@ -539,9 +539,7 @@ def cli_cleanup(args: ArgParams) -> None:
         if not os.path.exists(link.target):
             total_savings += File.remove(link.path, dryRun=args.dry)
 
-    Log.main('==> This operation {} approximately {} of disk space'.format(
-        'would free' if args.dry else 'has freed',
-        Utils.humanSize(total_savings)))
+    Log.main(Txt.freedDiskSpace(total_savings, dryRun=args.dry))
 
 
 # -----------------------------------
@@ -1657,7 +1655,7 @@ class InstallQueue:
         ''' Print download Queue (if any) '''
         if not self.downloadQueue:
             return
-        Log.info(Utils.prettyList([x.package for x in self.downloadQueue]))
+        Log.info(Txt.prettyList([x.package for x in self.downloadQueue]))
 
     def validateQueue(self) -> None:
         ''' Check if any digest is missing. If so, fail with exit code 1 '''
@@ -1886,9 +1884,7 @@ class UninstallQueue:
         for pkg in self.uninstallQueue:
             total_savings += File.remove(pkg.path, dryRun=dryRun)
 
-        Log.info('==> This operation {} approximately {} of disk space'.format(
-            'would free' if dryRun else 'has freed',
-            Utils.humanSize(total_savings)))
+        Log.info(Txt.freedDiskSpace(total_savings, dryRun=dryRun))
 
         if dryRun:
             print()
@@ -2312,19 +2308,14 @@ class File:
                 'Would remove' if dryRun else 'Removing',
                 Cellar.shortPath(path),
                 f'{files} files, ' if isdir else '',
-                Utils.humanSize(size)))
+                Txt.humanSize(size)))
         if not dryRun:
             shutil.rmtree(path) if isdir else os.remove(path)
         return size
 
 
-class Utils:
-    @staticmethod
-    def ask(msg: str, default: str = 'y') -> bool:
-        ''' Show user-input dialog. Returns `True` if user answered "yes" '''
-        ans = input(msg + (' [Y/n] ' if default == 'y' else ' [y/N] '))
-        return (ans or default).lower().startswith('y')
-
+class Txt:
+    ''' They all return strings '''
     @staticmethod
     def humanSize(size: float) -> str:
         ''' Convert bytes to human readable format, e.g., 4096 -> "4K" '''
@@ -2333,6 +2324,25 @@ class Utils:
                 break
             size /= 1024.0
         return f'{size:.1f}{unit}'
+
+    @staticmethod
+    def freedDiskSpace(savings: int, *, dryRun: bool) -> str:
+        ''' "==> This operation has freed approximately X of disk space" '''
+        return '==> This operation {} approximately {} of disk space'.format(
+            'would free' if dryRun else 'has freed', Txt.humanSize(savings))
+
+    @staticmethod
+    def prettyList(arr: list[str], prefix: str = '  - ') -> str:
+        ''' Join list of items with newline and prepend `prefix` '''
+        return '\n'.join(prefix + x for x in arr)
+
+
+class Utils:
+    @staticmethod
+    def ask(msg: str, default: str = 'y') -> bool:
+        ''' Show user-input dialog. Returns `True` if user answered "yes" '''
+        ans = input(msg + (' [Y/n] ' if default == 'y' else ' [y/N] '))
+        return (ans or default).lower().startswith('y')
 
     Version = TypeVar('Version', int, str, list[int])
 
@@ -2350,11 +2360,6 @@ class Utils:
         if op == '==':
             return left == right
         raise ArithmeticError(f'unknown op "{op}"')
-
-    @staticmethod
-    def prettyList(arr: list[str], prefix: str = '  - ') -> str:
-        ''' Join list of items with newline and prepend `prefix` '''
-        return '\n'.join(prefix + x for x in arr)
 
     @staticmethod
     def printInColumns(
