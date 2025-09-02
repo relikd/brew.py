@@ -314,7 +314,7 @@ def cli_install(args: ArgParams) -> None:
         pkg.checkUpdate()
         return
 
-    queue = InstallQueue(dryRun=args.dry_run, force=args.force)
+    queue = InstallQueue(dryRun=args.dry, force=args.force)
     queue.init(args.package, recursive=not args.no_dependencies)
     if not args.no_dependencies:
         queue.printQueue()
@@ -333,13 +333,13 @@ def cli_uninstall(args: ArgParams) -> None:
         # hard-fail check. no direct dependencies
         queue.validateQueue()
     # show potential changes
-    if not args.dry_run:
+    if not args.dry:
         queue.printUninstallQueue()
     # soft-fail check. warning for any doubly used dependencies
     queue.printSkipped()
     # if interactive, ask user to continue
-    if args.dry_run or args.yes or Utils.ask('Do you want to continue?', 'n'):
-        queue.uninstall(dryRun=args.dry_run)
+    if args.dry or args.yes or Utils.ask('Do you want to continue?', 'n'):
+        queue.uninstall(dryRun=args.dry)
     else:
         Log.info('abort.')
 
@@ -378,8 +378,8 @@ def cli_link(args: ArgParams) -> None:
         return
 
     # perform link
-    vpkg.link(noExe=args.no_bin, dryRun=args.dry_run)
-    Log.main('==> Linked to', vpkg.version)
+    vpkg.link(linkOpt=not args.bin, linkBin=not args.no_bin, dryRun=args.dry)
+    Log.main('==> Linked', 'binaries for' if args.bin else 'to', vpkg.version)
 
 
 # https://docs.brew.sh/Manpage#unlink---dry-run-installed_formula-
@@ -391,8 +391,8 @@ def cli_unlink(args: ArgParams) -> None:
         return
 
     # perform unlink
-    pkg.unlink(onlyExe=args.bin, dryRun=args.dry_run)
-    Log.main('==> Unlinked', prev)
+    pkg.unlink(unlinkOpt=not args.bin, dryRun=args.dry)
+    Log.main('==> Unlinked', 'binaries from' if args.bin else '', prev)
 
 
 def cli_switch(args: ArgParams) -> None:
@@ -416,11 +416,11 @@ def cli_switch(args: ArgParams) -> None:
         Log.error('no version provided')
         return
 
-    noBinsLinks = not pkg.binLinks
-    pkg.unlink(onlyExe=False)
-    pkg.version(args.version).link(noExe=noBinsLinks)
+    hasBinLinks = bool(pkg.binLinks)
+    pkg.unlink(unlinkBin=hasBinLinks)
+    pkg.version(args.version).link(linkBin=hasBinLinks)
     Log.main('==> switched to version', pkg.activeVersion)
-    if noBinsLinks:
+    if not hasBinLinks:
         Log.warn('no binary links found. Skipped for new version as well.')
 
 
@@ -459,7 +459,7 @@ def cli_cleanup(args: ArgParams) -> None:
         maxage = Env.MAX_AGE_DOWNLOAD if args.prune is None else args.prune
         for file in os.scandir(Cellar.DOWNLOAD):
             if File.isOutdated(file.path, maxage * 24 * 60 * 60):
-                total_savings += File.remove(file.path, dryRun=args.dry_run)
+                total_savings += File.remove(file.path, dryRun=args.dry)
 
     # remove all non-active versions
     Log.info('==> Removing old versions')
@@ -468,7 +468,7 @@ def cli_cleanup(args: ArgParams) -> None:
             vpkg = pkg.version(ver)
             if vpkg.isKegOnly:
                 continue
-            total_savings += File.remove(vpkg.path, dryRun=args.dry_run)
+            total_savings += File.remove(vpkg.path, dryRun=args.dry)
 
     # should never happen but just in case, remove symlinks which point nowhere
     Log.info('==> Removing dead links')
@@ -480,10 +480,10 @@ def cli_cleanup(args: ArgParams) -> None:
 
     for link in binLinks:
         if not os.path.exists(link.target):
-            total_savings += File.remove(link.path, dryRun=args.dry_run)
+            total_savings += File.remove(link.path, dryRun=args.dry)
 
     Log.main('==> This operation {} approximately {} of disk space'.format(
-        'would free' if args.dry_run else 'has freed',
+        'would free' if args.dry else 'has freed',
         Utils.humanSize(total_savings)))
 
 
@@ -594,7 +594,7 @@ def parseArgs() -> ArgParams:
     cmd = cli.subcommand('install', cli_install)
     cmd.arg('package', help='Brew package name')
     cmd.arg_bool('-f', '--force', help='Install even if already installed')
-    cmd.arg_bool('-n', '--dry-run', help='''
+    cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         Show what would be installed, but do not actually install anything''')
     cmd.arg('-arch', help='''Manually set platform architecture
         (e.g. 'arm64_sequoia' (brew), 'arm64|darwin|macOS 15' (ghcr))''')
@@ -616,7 +616,7 @@ def parseArgs() -> ArgParams:
     cmd.arg_bool('--no-dependencies', help='''
         Do not uninstall any of the dependencies of package''')
     cmd.arg_bool('--leaves', help='Show top-most dependencies, not direct')
-    cmd.arg_bool('-n', '--dry-run', help='''
+    cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         List packages which would be uninstalled, without actually removing''')
 
     # link
@@ -625,7 +625,7 @@ def parseArgs() -> ArgParams:
     cmd.arg('version', nargs='?', help='''
         Optional if there is only a single version installed''')
     cmd.arg_bool('-f', '--force', help='Allow keg-only packages to be linked')
-    cmd.arg_bool('-n', '--dry-run', help='''
+    cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         List files which would be linked without actually linking''')
     grp = cmd.xor_group()
     grp.arg_bool('--bin', help='Only link binaries, ignore opt-link')
@@ -634,7 +634,7 @@ def parseArgs() -> ArgParams:
     # unlink
     cmd = cli.subcommand('unlink', cli_unlink)
     cmd.arg('package', help='Brew package name')
-    cmd.arg_bool('-n', '--dry-run', help='''
+    cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         List files which would be unlinked without actually unlinking''')
     cmd.arg_bool('--bin', help='Unlink binary but keep opt link active')
 
@@ -656,7 +656,7 @@ def parseArgs() -> ArgParams:
     cmd.arg('packages', nargs='*', help='Brew package name')
     cmd.arg('--prune', type=int, help='''
         Remove all cache files older than specified days''')
-    cmd.arg_bool('-n', '--dry-run', help='''
+    cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         Show what would be removed, but do not actually remove anything''')
 
     return cli.parse()
@@ -1085,19 +1085,19 @@ class LocalPackage:
         return Cellar.allBinLinks(self.path + '/')
 
     def unlink(
-        self, *,
-        onlyExe: bool = False, dryRun: bool = False, quiet: bool = False,
+        self, *, unlinkOpt: bool = True, unlinkBin: bool = True,
+        dryRun: bool = False, quiet: bool = False,
     ) -> list[LinkTarget]:
         ''' remove symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
         rv = []
-        rv += self.binLinks
-        if not dryRun:
-            del self.binLinks  # clear cached_property
+        if unlinkBin:
+            rv += self.binLinks
 
-        if not onlyExe:
+        if unlinkOpt:
             rv += filter(None, [self.readOptLink(ensurePkg=False)])
-            if not dryRun:
-                self._resetCachedProperty(inclBin=False)
+
+        if not dryRun:
+            self._resetCachedProperty(optLink=unlinkOpt, binLink=unlinkBin)
 
         for lnk in rv:
             if not quiet:
@@ -1106,12 +1106,13 @@ class LocalPackage:
                 os.remove(lnk.path)
         return rv
 
-    def _resetCachedProperty(self, *, inclBin: bool) -> None:
-        # clear cached_property
-        self.__dict__.pop('optLink', None)
-        self.__dict__.pop('activeVersion', None)
-        self.__dict__.pop('inactiveVersions', None)
-        if inclBin:
+    def _resetCachedProperty(self, *, optLink: bool, binLink: bool) -> None:
+        ''' clear cached_property '''
+        if optLink:
+            self.__dict__.pop('optLink', None)
+            self.__dict__.pop('activeVersion', None)
+            self.__dict__.pop('inactiveVersions', None)
+        if binLink:
             self.__dict__.pop('binLinks', None)
 
 
@@ -1168,21 +1169,24 @@ class LocalPackageVersion:
         return []
 
     def link(
-        self, *, noExe: bool = False, dryRun: bool = False,
+        self, *, linkOpt: bool = True, linkBin: bool = True,
+        dryRun: bool = False,
     ) -> None:
         ''' create symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
         if not self.installed:
             raise RuntimeError('Package not installed')
 
         if not dryRun:
-            self.pkg._resetCachedProperty(inclBin=not noExe)
+            self.pkg._resetCachedProperty(optLink=linkOpt, binLink=linkBin)
 
-        versLink = os.path.join(Cellar.OPT, self.pkg.name)
-        queue = [LinkTarget(versLink, self.path + '/')]
+        optLinkPath = os.path.join(Cellar.OPT, self.pkg.name)
+        queue = []
+        if linkOpt:
+            queue.append(LinkTarget(optLinkPath, self.path + '/'))
 
-        for exePath in [] if noExe else self._gatherBinaries:
+        for exePath in self._gatherBinaries if linkBin else []:
             # dynamic link on opt instead of direct
-            dynLink = exePath.replace(self.path, versLink, 1)
+            dynLink = exePath.replace(self.path, optLinkPath, 1)
             queue.append(LinkTarget(
                 os.path.join(Cellar.BIN, os.path.basename(exePath)), dynLink))
 
@@ -1615,7 +1619,7 @@ class InstallQueue:
 
                 withBin = Env.LINK_BINARIES if linkExe is None else linkExe
                 pkg.unlink()
-                vpkg.link(noExe=not withBin)
+                vpkg.link(linkBin=withBin)
         Log.endCounter()
         Log.dumpErrorSummary()
 
