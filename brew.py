@@ -522,6 +522,21 @@ def cli_cleanup(args: ArgParams) -> None:
     for pkg in packages:
         total_savings += pkg.cleanup(dryRun=args.dry)
 
+    # remove dangling dependencies
+    if not args.packages:
+        Log.info('==> Removing dangling dependencies')
+        depTree = Cellar.getDependencyTree()
+        depsOnly = set(x.name for x in packages if not x.primary)
+        while dangling := depTree.reverse.directEnd() & depsOnly:
+            for dang in dangling:
+                total_savings += File.remove(
+                    LocalPackage(dang).path, dryRun=args.dry)
+                depsOnly.remove(dang)
+                del depTree.reverse.direct[dang]
+            # update internal dependency tree structure
+            for k, v in depTree.reverse.direct.items():
+                v.difference_update(dangling)
+
     # should never happen but just in case, remove symlinks which point nowhere
     Log.info('==> Removing dead links')
     binLinks = Cellar.allBinLinks()
@@ -967,9 +982,9 @@ class TreeDict:
         ''' List of keys which are not present in `.direct` (keeps order) '''
         return type(keys)(key for key in keys if self.direct.get(key) is None)
 
-    def directEnd(self) -> list[str]:
+    def directEnd(self) -> set[str]:
         ''' List of keys with with direct dead-ends '''
-        return [key for key, deps in self.direct.items() if not deps]
+        return set(key for key, deps in self.direct.items() if not deps)
 
     def assertExist(self, keys: Keys, msg: str = 'unknown package:') -> None:
         ''' Print any `.missing(keys)` and exit with status code 1 '''
