@@ -562,13 +562,13 @@ def cli_cleanup(args: ArgParams) -> None:
 
     # should never happen but just in case, remove symlinks which point nowhere
     Log.info('==> Removing dead links')
-    binLinks = Cellar.allBinLinks() + Cellar.allOptLinks()
+    links = Cellar.allBinLinks() + Cellar.allOptLinks()
     if args.packages:
-        deadPaths = set(x.path + '/' for x in packages)
-        binLinks = [x for x in binLinks
-                    if any(x.target.startswith(y) for y in deadPaths)]
+        deadPaths = [pkg.path + '/' for pkg in packages]
+        links = [lnk for lnk in links
+                 if any(lnk.target.startswith(x) for x in deadPaths)]
 
-    for link in binLinks:
+    for link in links:
         if not os.path.exists(link.target):
             total_savings += File.remove(link.path, dryRun=args.dry)
 
@@ -1119,20 +1119,17 @@ class LinkTarget(NamedTuple):
     raw: str = ''  # relative target
 
     @staticmethod
-    def read(filePath: str, startswith: str = '') -> 'LinkTarget|None':
+    def read(filePath: str) -> 'LinkTarget|None':
         ''' Read a single symlink and populate with absolute paths '''
         if not os.path.islink(filePath):
             return None
         raw = os.readlink(filePath)
         real = os.path.realpath(os.path.join(os.path.dirname(filePath), raw))
-        if real.startswith(startswith or ''):
-            return LinkTarget(filePath, real, raw)
-        return None
+        return LinkTarget(filePath, real, raw)
 
     @staticmethod
-    def allInDir(path: str, startswith: str = '') -> 'list[LinkTarget]':
-        return [lnk for file in os.scandir(path)
-                if (lnk := LinkTarget.read(file.path, startswith))]
+    def allInDir(path: str) -> 'list[LinkTarget]':
+        return [x for f in os.scandir(path) if (x := LinkTarget.read(f.path))]
 
 
 # -----------------------------------
@@ -1257,22 +1254,21 @@ class LocalPackage:
 
     # Symlink processing
 
-    def readOptLink(self, *, ensurePkg: bool) -> 'LinkTarget|None':
-        ''' Read `@/opt/<pkg>` link. Returns `None` if non-exist '''
-        pkgPath = (self.path + '/') if ensurePkg else ''
-        # TODO: should opt-links have "@version" suffix or not?
-        # if no, fix-dylib needs adjustments
-        return LinkTarget.read(os.path.join(Cellar.OPT, self.name), pkgPath)
-
     @cached_property
     def optLink(self) -> 'LinkTarget|None':
-        ''' Return `OPT` link but only if it links to the current package '''
-        return self.readOptLink(ensurePkg=True)
+        ''' Read `@/opt/<pkg>` link. `None` if non-exist or not link to pkg '''
+        # TODO: should opt-links have "@version" suffix or not?
+        #       if no, fix-dylib needs adjustments
+        lnk = LinkTarget.read(os.path.join(Cellar.OPT, self.name))
+        if lnk and not lnk.target.startswith(self.path + '/'):
+            return None
+        return lnk
 
     @cached_property
     def binLinks(self) -> list[LinkTarget]:
         ''' List of `@/bin/...` links that match `<pkg>` destination '''
-        return Cellar.allBinLinks(self.path + '/')
+        return [lnk for lnk in Cellar.allBinLinks()
+                if lnk.target.startswith(self.path + '/')]
 
     def unlink(
         self, *, unlinkOpt: bool = True, unlinkBin: bool = True,
@@ -1284,7 +1280,7 @@ class LocalPackage:
             rv += self.binLinks
 
         if unlinkOpt:
-            rv += filter(None, [self.readOptLink(ensurePkg=False)])
+            rv += filter(None, [self.optLink])
 
         for lnk in rv:
             if not quiet:
@@ -1617,9 +1613,9 @@ class Cellar:
         return DependencyTree(forward)
 
     @staticmethod
-    def allBinLinks(matching: str = '') -> list[LinkTarget]:
-        ''' List of all `@/bin/...` links with `<matching>` destination '''
-        return LinkTarget.allInDir(Cellar.BIN, matching)
+    def allBinLinks() -> list[LinkTarget]:
+        ''' List of all `@/bin/...` links '''
+        return LinkTarget.allInDir(Cellar.BIN)
 
     @staticmethod
     def allOptLinks() -> list[LinkTarget]:
