@@ -361,16 +361,14 @@ def cli_missing(args: ArgParams) -> None:
 
 # https://docs.brew.sh/Manpage#install-options-formulacask-
 def cli_install(args: ArgParams) -> None:
-    ''' Install a package with all dependencies. '''
+    ''' Install package(s) with all dependencies. '''
     needsInstall = []  # type: list[str]
     if args.force:
         needsInstall = args.packages
     else:
         for pkgName in args.packages:
-            pkg = LocalPackage(pkgName)
-            if pkg.installed:
-                Log.info(pkgName, 'already installed, checking for updates')
-                pkg.checkUpdate()
+            if LocalPackage(pkgName).installed:
+                Log.info(pkgName, 'already installed')
             else:
                 needsInstall.append(pkgName)
     if not needsInstall:
@@ -1169,16 +1167,6 @@ class LocalPackage:
         ''' Return any of the installed versions (should be latest) '''
         assert self.installed, 'Only installed packages can call anyVersion()'
         return self.version(self.allVersions[-1])  # alphanumeric sort, latest
-
-    def checkUpdate(self, *, force: bool = False) -> None:
-        ''' Print whether package is up-to-date or needs upgrade '''
-        if self.installed:
-            onlineVersion = Brew.info(self.name, force=force).version
-            if onlineVersion in self.allVersions:
-                Log.info('package is up to date.')
-            else:
-                Log.info(' * upgrade available {} (installed: {})'.format(
-                    onlineVersion, ', '.join(self.allVersions)))
 
     def cleanup(self, *, dryRun: bool = False, quiet: bool = False) -> int:
         ''' Delete old, inactive versions and return size of savings '''
