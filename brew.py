@@ -481,9 +481,14 @@ def cli_switch(args: ArgParams) -> None:
 def cli_toggle(args: ArgParams) -> None:
     '''
     Link/unlink all binaries of a single package.
-    Can be used to switch between versioned packages (e.g. node <-> node@22).
+    Can be used to switch between versioned packages
+    (automatically disables other versions, e.g. node <=> node@22).
     '''
     pkg = LocalPackage(args.package).assertInstalled()
+    if not pkg.activeVersion:
+        Log.error('Only active packages can be toggled (link first)')
+        return
+
     isActive = bool(pkg.binLinks)
     baseName = pkg.name.split('@')[0]
     allVersions = [x for x in Cellar.infoAll()
@@ -495,7 +500,7 @@ def cli_toggle(args: ArgParams) -> None:
     if isActive:
         Log.info('==> disabled', pkg.name)
     else:
-        pkg.anyVersion().link(linkOpt=False, linkBin=True)
+        pkg.version(pkg.activeVersion).link(linkOpt=False, linkBin=True)
         Log.info('==> enabled', pkg.name, pkg.activeVersion)
 
 
