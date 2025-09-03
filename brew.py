@@ -445,7 +445,7 @@ def cli_unlink(args: ArgParams) -> None:
         return
 
     # perform unlink
-    pkg.unlink(unlinkOpt=not args.bin, dryRun=args.dry)
+    pkg.unlink(unlinkOpt=not args.bin, unlinkBin=True, dryRun=args.dry)
     Log.main('==> Unlinked', 'binaries from' if args.bin else '', prev)
 
 
@@ -471,8 +471,8 @@ def cli_switch(args: ArgParams) -> None:
         return
 
     hasBinLinks = bool(pkg.binLinks)
-    pkg.unlink(unlinkBin=hasBinLinks)
-    pkg.version(args.version).link(linkBin=hasBinLinks)
+    pkg.unlink(unlinkOpt=True, unlinkBin=hasBinLinks)
+    pkg.version(args.version).link(linkOpt=True, linkBin=hasBinLinks)
     Log.main('==> switched to version', pkg.activeVersion)
     if not hasBinLinks:
         Log.warn('no binary links found. Skipped for new version as well.')
@@ -490,12 +490,12 @@ def cli_toggle(args: ArgParams) -> None:
                    if x.name == baseName or x.name.startswith(baseName + '@')]
 
     for prev in allVersions:
-        prev.unlink()
+        prev.unlink(unlinkOpt=False, unlinkBin=True)
 
     if isActive:
         Log.info('==> disabled', pkg.name)
     else:
-        pkg.anyVersion().link()
+        pkg.anyVersion().link(linkOpt=False, linkBin=True)
         Log.info('==> enabled', pkg.name, pkg.activeVersion)
 
 
@@ -1263,7 +1263,7 @@ class LocalPackage:
                 if lnk.target.startswith(self.path + '/')]
 
     def unlink(
-        self, *, unlinkOpt: bool = True, unlinkBin: bool = True,
+        self, *, unlinkOpt: bool, unlinkBin: bool,
         dryRun: bool = False, quiet: bool = False,
     ) -> list[LinkTarget]:
         ''' remove symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
@@ -1350,7 +1350,7 @@ class LocalPackageVersion:
         return []
 
     def link(
-        self, *, linkOpt: bool = True, linkBin: bool = True,
+        self, *, linkOpt: bool, linkBin: bool,
         dryRun: bool = False, quiet: bool = False,
     ) -> None:
         ''' create symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
@@ -1854,14 +1854,12 @@ class InstallQueue:
                 continue
 
             if vpkg.isKegOnly:
-                if not pkg.optLink:
-                    vpkg.link(linkBin=False)
+                linkBin = False
                 Log.warn('keg-only, must link manually ({}, {})'.format(
                     pkg.name, vpkg.version), summary=True)
-                continue
 
-            pkg.unlink()
-            vpkg.link(linkBin=linkBin)
+            pkg.unlink(unlinkOpt=True, unlinkBin=True)  # cleanup prev install
+            vpkg.link(linkOpt=True, linkBin=linkBin)
 
         Log.endCounter()
         Log.dumpErrorSummary()
@@ -2030,7 +2028,8 @@ class UninstallQueue:
         Log.info('==> Remove symlinks for', countPkgs, 'packages')
         countSym = 0
         for pkg in self.uninstallQueue:
-            links = pkg.unlink(dryRun=dryRun, quiet=dryRun and Log.LEVEL <= 2)
+            links = pkg.unlink(unlinkOpt=True, unlinkBin=True,
+                               dryRun=dryRun, quiet=dryRun and Log.LEVEL <= 2)
             countSym += len(links)
         Log.main('Would remove' if dryRun else 'Removed', countSym, 'symlinks')
 
