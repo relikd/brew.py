@@ -1168,11 +1168,11 @@ class LocalPackage:
 
     def cleanup(self, *, dryRun: bool = False, quiet: bool = False) -> int:
         ''' Delete old, inactive versions and return size of savings '''
+        if self.pinned:
+            return 0
         savings = 0
         for ver in self.inactiveVersions:
             vpkg = self.version(ver)
-            if vpkg.isKegOnly:
-                continue
             savings += File.remove(vpkg.path, dryRun=dryRun, quiet=quiet)
         return savings
 
