@@ -1735,6 +1735,7 @@ class InstallQueue:
     def __init__(self, *, dryRun: bool, force: bool) -> None:
         self.dryRun = dryRun
         self.force = force
+        self._primary = set()  # type: set[str]  # pkg
         self._missingDigest = []  # type: list[str]  # pkg
         self.downloadQueue = []  # type: list[InstallQueue.Item]
         self.installQueue = []  # type: list[str]  # tar file path
@@ -1745,6 +1746,7 @@ class InstallQueue:
         if os.path.isfile(pkgOrFile) and pkgOrFile.endswith('.tar.gz'):
             Log.info('==> Install from tar file ...')
             self.installQueue.append(pkgOrFile)
+            self._primary.add(pkgOrFile)
         elif '/' in pkgOrFile:
             Log.error('package may not contain path-separator')
         elif recursive:
@@ -1754,9 +1756,11 @@ class InstallQueue:
             Log.info('==> Ignoring dependencies ...')
             bundle = Brew.info(pkgOrFile)
             self.add(pkgOrFile, bundle.version, bundle.digest)
+            self._primary.add(pkgOrFile)
 
     def addRecursive(self, pkg: str) -> None:
         ''' Recursive online search for dependencies '''
+        self._primary.add(pkg)
         queue = [pkg]
         done = set(self._missingDigest).union(
             x.package for x in self.downloadQueue)
@@ -1824,12 +1828,12 @@ class InstallQueue:
         linkDeps = Config.INSTALL.LINK_BIN_DEPS if linkExe is None else linkExe
 
         # reverse to install main package last (allow re-install until success)
-        for i, tar in enumerate(reversed(self.installQueue), 1):
+        for tar in reversed(self.installQueue):
             bundle = TarPackage(tar).extract(dryRun=self.dryRun)
             if not bundle:
                 continue  # install error
 
-            isPrimary = i == total
+            isPrimary = bundle.package in self._primary or tar in self._primary
             linkBin = linkPrim if isPrimary else linkDeps
 
             if self.dryRun:
