@@ -238,6 +238,8 @@ def cli_upgrade(args: ArgParams) -> None:
         Log.error('You cannot use both, use either <package> param or --all')
         return
 
+    Log.info('==> {} package manifests ...'.format(
+        'download latest' if args.force else 'get'))
     queue = InstallQueue(dryRun=args.dry, force=False)
 
     for pkg in Cellar.infoAll(args.packages, assertInstalled=True):
@@ -1121,6 +1123,9 @@ class LocalPackage:
         self.name = pkg
         self.path = Cellar.installPath(pkg)
 
+    def __repr__(self) -> str:
+        return f'<LocalPackage {self.name}>'
+
     def assertInstalled(self, msg: str = 'unknown package:') -> 'LocalPackage':
         '''If not installed: print error message and exit with status code 1'''
         if not self.installed:
@@ -1285,6 +1290,9 @@ class LocalPackageVersion:
         self.pkg = pkg
         self.version = version
         self.path = os.path.join(pkg.path, version)
+
+    def __repr__(self) -> str:
+        return f'<LocalPackageVersion {self.pkg.name} ({self.version})>'
 
     @cached_property
     def installed(self) -> bool:
