@@ -906,7 +906,7 @@ class Config:
 ; whether install should link binaries of main package (user-installed)
 link_bin_primary = yes  ; default: yes
 ; whether install should link binaries of dependencies
-link_bin_dependency = yes  ; default: yes
+link_bin_dependency = no  ; default: no
 
 [cleanup]
 ; unit: s|m|h|d (secs, mins, hours, days)
@@ -927,7 +927,7 @@ auth = 365d  ; default: 365d
         sec = ini['install']
         Config.INSTALL = Config.Install(
             LINK_BIN_PRIM=sec.getboolean('link_bin_primary', fallback=True),
-            LINK_BIN_DEPS=sec.getboolean('link_bin_dependency', fallback=True),
+            LINK_BIN_DEPS=sec.getboolean('link_bin_dependency', fallback=False)
         )
         sec = ini['cleanup']
         Config.CLEANUP = Config.Cleanup(
