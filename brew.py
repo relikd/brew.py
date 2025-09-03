@@ -480,11 +480,11 @@ def cli_switch(args: ArgParams) -> None:
 
 def cli_toggle(args: ArgParams) -> None:
     '''
-    Enable/disable a single package.
+    Link/unlink all binaries of a single package.
     Can be used to switch between versioned packages (e.g. node <-> node@22).
     '''
     pkg = LocalPackage(args.package).assertInstalled()
-    isActive = bool(pkg.activeVersion)
+    isActive = bool(pkg.binLinks)
     baseName = pkg.name.split('@')[0]
     allVersions = [x for x in Cellar.infoAll()
                    if x.name == baseName or x.name.startswith(baseName + '@')]
@@ -1336,7 +1336,7 @@ class LocalPackageVersion:
 
     @cached_property
     def isKegOnly(self) -> bool:
-        ''' Check if package is keg-only '''
+        ''' Parse ruby file to check if package is keg-only '''
         return RubyParser(self.rubyPath).parseKegOnly()
 
     # Symlink processing
