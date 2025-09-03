@@ -529,12 +529,12 @@ def cli_cleanup(args: ArgParams) -> None:
     '''
     total_savings = 0
     packages = Cellar.infoAll(args.packages, assertInstalled=True)
-    if not packages:
+    if args.packages and not packages:
         Log.error('no package found')
         return
 
     if not args.packages:
-        Log.info('==> Removing cached downloads')
+        Log.info('==> Removing cached files')
         total_savings += Cellar.cleanup(args.prune, dryRun=args.dry)
 
     # remove all non-active versions
