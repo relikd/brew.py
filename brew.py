@@ -539,7 +539,7 @@ def cli_cleanup(args: ArgParams) -> None:
 
     # should never happen but just in case, remove symlinks which point nowhere
     Log.info('==> Removing dead links')
-    binLinks = Cellar.allBinLinks()
+    binLinks = Cellar.allBinLinks() + Cellar.allOptLinks()
     if args.packages:
         deadPaths = set(x.path + '/' for x in packages)
         binLinks = [x for x in binLinks
@@ -1102,6 +1102,11 @@ class LinkTarget(NamedTuple):
             return LinkTarget(filePath, real, raw)
         return None
 
+    @staticmethod
+    def allInDir(path: str, startswith: str = '') -> 'list[LinkTarget]':
+        return [lnk for file in os.scandir(path)
+                if (lnk := LinkTarget.read(file.path, startswith))]
+
 
 # -----------------------------------
 #  LocalPackage
@@ -1576,8 +1581,12 @@ class Cellar:
     @staticmethod
     def allBinLinks(matching: str = '') -> list[LinkTarget]:
         ''' List of all `@/bin/...` links with `<matching>` destination '''
-        return [lnk for file in os.scandir(Cellar.BIN)
-                if (lnk := LinkTarget.read(file.path, matching))]
+        return LinkTarget.allInDir(Cellar.BIN, matching)
+
+    @staticmethod
+    def allOptLinks() -> list[LinkTarget]:
+        ''' List of all `@/opt/...` links '''
+        return LinkTarget.allInDir(Cellar.OPT)
 
     @staticmethod
     def shortPath(path: str) -> str:
