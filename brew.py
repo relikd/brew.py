@@ -486,6 +486,27 @@ def cli_switch(args: ArgParams) -> None:
         Log.warn('no binary links found. Skipped for new version as well.')
 
 
+def cli_toggle(args: ArgParams) -> None:
+    '''
+    Enable/disable a single package.
+    Can be used to switch between versioned packages (e.g. node <-> node@22).
+    '''
+    pkg = LocalPackage(args.package).assertInstalled()
+    isActive = bool(pkg.activeVersion)
+    baseName = pkg.name.split('@')[0]
+    allVersions = [x for x in Cellar.infoAll()
+                   if x.name == baseName or x.name.startswith(baseName + '@')]
+
+    for prev in allVersions:
+        prev.unlink()
+
+    if isActive:
+        Log.info('==> disabled', pkg.name)
+    else:
+        pkg.anyVersion().link()
+        Log.info('==> enabled', pkg.name, pkg.activeVersion)
+
+
 # https://docs.brew.sh/Manpage#pin-installed_formula-
 def cli_pin(args: ArgParams) -> None:
     ''' Prevent specified packages from being upgraded. '''
@@ -725,6 +746,10 @@ def parseArgs() -> ArgParams:
     cmd = cli.subcommand('switch', cli_switch)
     cmd.arg('package', help='Brew package name')
     cmd.arg('version', nargs='?', help='Package version')  # convenience omit
+
+    # toggle
+    cmd = cli.subcommand('toggle', cli_toggle)
+    cmd.arg('package', help='Brew package name')
 
     # pin
     cmd = cli.subcommand('pin', cli_pin)
@@ -1136,6 +1161,11 @@ class LocalPackage:
     def version(self, version: str) -> 'LocalPackageVersion':
         ''' Create new `LocalPackageVersion` instance '''
         return LocalPackageVersion(self, version)
+
+    def anyVersion(self) -> 'LocalPackageVersion':
+        ''' Return any of the installed versions (should be latest) '''
+        assert self.installed, 'Only installed packages can call anyVersion()'
+        return self.version(self.allVersions[-1])  # alphanumeric sort, latest
 
     def checkUpdate(self, *, force: bool = False) -> None:
         ''' Print whether package is up-to-date or needs upgrade '''
