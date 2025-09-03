@@ -4,6 +4,8 @@ A lightweight replacement for Homebrew
 
 see [usage](#usage) below.
 
+[![usage video](doc/usage.gif)](doc/usage.mp4)
+
 
 ## Install
 
