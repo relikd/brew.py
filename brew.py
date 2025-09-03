@@ -269,25 +269,17 @@ def cli_upgrade(args: ArgParams) -> None:
     queue.download()
     queue.install(isUpgrade=True)
 
-    if not args.dry:
-        Log.info()
-        Log.info('==> Post-upgrade')
-        for pkgName, ver in queue.finished:
-            pkg = LocalPackage(pkgName)
-            vpkg = pkg.version(ver)
+    if args.keep or args.dry:
+        return
 
-            if not vpkg.isKegOnly:  # does not exist until after install
-                pkg.unlink(unlinkOpt=True, unlinkBin=False, quiet=True)
-                vpkg.link(linkOpt=True, linkBin=False)
-
-            if args.keep:
-                continue
-
-            # remove old version immediately
-            if pkg.pinned:
-                Log.warn(f'keeping old version of {pkgName} (reason: pinned)')
-            else:
-                pkg.cleanup()
+    Log.info()
+    Log.info('==> Delete old versions')
+    for pkgName, ver in queue.finished:
+        pkg = LocalPackage(pkgName)
+        if pkg.pinned:
+            Log.warn(f'keeping old version of {pkg.name} (reason: pinned)')
+        else:
+            pkg.cleanup()
 
 
 # https://docs.brew.sh/Manpage#deps-options-formulacask-
@@ -1851,7 +1843,14 @@ class InstallQueue:
 
             self.finished.append((pkg.name, vpkg.version))
 
-            if skipLink or isUpgrade:
+            if skipLink:
+                continue
+
+            if isUpgrade:
+                # only switch to new version if old is linked already
+                if pkg.optLink:
+                    pkg.unlink(unlinkOpt=True, unlinkBin=False, quiet=True)
+                    vpkg.link(linkOpt=True, linkBin=False)
                 continue
 
             if vpkg.isKegOnly:
