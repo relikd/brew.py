@@ -362,14 +362,23 @@ def cli_missing(args: ArgParams) -> None:
 # https://docs.brew.sh/Manpage#install-options-formulacask-
 def cli_install(args: ArgParams) -> None:
     ''' Install a package with all dependencies. '''
-    pkg = LocalPackage(args.package)
-    if not args.force and pkg.installed:
-        Log.info(pkg.name, 'already installed, checking for newer version')
-        pkg.checkUpdate()
+    needsInstall = []  # type: list[str]
+    if args.force:
+        needsInstall = args.packages
+    else:
+        for pkgName in args.packages:
+            pkg = LocalPackage(pkgName)
+            if pkg.installed:
+                Log.info(pkgName, 'already installed, checking for updates')
+                pkg.checkUpdate()
+            else:
+                needsInstall.append(pkgName)
+    if not needsInstall:
         return
 
     queue = InstallQueue(dryRun=args.dry, force=args.force)
-    queue.init(args.package, recursive=not args.no_dependencies)
+    for pkgName in needsInstall:
+        queue.init(pkgName, recursive=not args.no_dependencies)
     if not args.no_dependencies:
         queue.printQueue()
     queue.validateQueue()
@@ -691,7 +700,7 @@ def parseArgs() -> ArgParams:
 
     # install
     cmd = cli.subcommand('install', cli_install, aliases=['add'])
-    cmd.arg('package', help='Brew package name')
+    cmd.arg('packages', nargs='+', help='Brew package name')
     cmd.arg_bool('-f', '--force', help='Install even if already installed')
     cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         Show what would be installed, but do not actually install anything''')
@@ -1744,16 +1753,17 @@ class InstallQueue:
     def init(self, pkgOrFile: str, *, recursive: bool) -> None:
         ''' Auto-detect input type and install from tar-file or brew online '''
         if os.path.isfile(pkgOrFile) and pkgOrFile.endswith('.tar.gz'):
-            Log.info('==> Install from tar file ...')
+            shortName = os.path.basename(pkgOrFile)
+            Log.info(f'==> Install tar file ({shortName}) ...')
             self.installQueue.append(pkgOrFile)
             self._primary.add(pkgOrFile)
         elif '/' in pkgOrFile:
             Log.error('package may not contain path-separator')
         elif recursive:
-            Log.info('==> Gather dependencies ...')
+            Log.info(f'==> Gather dependencies for {pkgOrFile} ...')
             self.addRecursive(pkgOrFile)
         else:
-            Log.info('==> Ignoring dependencies ...')
+            Log.info(f'==> Install {pkgOrFile} (ignoring dependencies) ...')
             bundle = Brew.info(pkgOrFile)
             self.add(pkgOrFile, bundle.version, bundle.digest)
             self._primary.add(pkgOrFile)
