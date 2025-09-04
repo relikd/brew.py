@@ -1678,10 +1678,12 @@ class TarPackage:
         # Strip leading / (tar's directory separator) from filenames.
         # Include os.sep (target OS directory separator) as well.
         if member.name.startswith(('/', os.sep)):
+            Log.warn('reject absolute path', member.name, summary=True)
             return False
         # Ensure we stay in the destination
         target_path = os.path.realpath(os.path.join(dest_path, member.name))
         if os.path.commonpath([target_path, dest_path]) != dest_path:
+            Log.warn('path breaks cellar bounds', member.name, summary=True)
             return False
         # Limit permissions (no high bits, and go-w)
         if member.mode is not None:
@@ -1699,11 +1701,14 @@ class TarPackage:
                 pass
             else:
                 # Reject special files
+                Log.warn('reject special files', summary=True)
                 return False
 
         # Check link destination for 'data'
         if member.islnk() or member.issym():
             if os.path.isabs(member.linkname):
+                Log.warn('reject symlink absolute path', member.linkname,
+                         summary=True)
                 return False
             normalized = os.path.normpath(member.linkname)
             if normalized != member.linkname:
@@ -1715,6 +1720,8 @@ class TarPackage:
                 target_path = os.path.join(dest_path, member.linkname)
             target_path = os.path.realpath(target_path)
             if os.path.commonpath([target_path, dest_path]) != dest_path:
+                Log.warn('symlink breaks cellar bounds', member.linkname,
+                         summary=True)
                 return False
         return True
 
