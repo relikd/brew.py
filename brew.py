@@ -1902,6 +1902,13 @@ class Fixer:
         parentDir = os.path.dirname(fname)
         repl1 = parentDir.replace(Cellar.CELLAR, '@@HOMEBREW_CELLAR@@', 1)
         repl2 = parentDir.replace(Cellar.ROOT, '@@HOMEBREW_PREFIX@@', 1)
+        assert repl1.startswith('@@HOMEBREW_CELLAR@@')  # ./cellar/pkg/version/
+
+        # check if opt-link points to the same package
+        _, pkgName, pkgVer, *subpath = repl1.split('/')
+        opt_prefix = f'@@HOMEBREW_PREFIX@@/opt/{pkgName}/'
+        repl_same = opt_prefix + '/'.join(subpath)
+
         atime = os.path.getatime(fname)
         mtime = os.path.getmtime(fname)
 
@@ -1910,7 +1917,10 @@ class Fixer:
             if oldRef.startswith('@@HOMEBREW_CELLAR@@'):
                 newRef = os.path.relpath(oldRef, repl1)
             elif oldRef.startswith('@@HOMEBREW_PREFIX@@'):
-                newRef = os.path.relpath(oldRef, repl2)
+                if oldRef.startswith(opt_prefix):
+                    newRef = os.path.relpath(oldRef, repl_same)
+                else:
+                    newRef = os.path.relpath(oldRef, repl2)
             elif oldRef.startswith('@@'):
                 Log.warn('unhandled dylib link', oldRef, summary=True)
                 continue
