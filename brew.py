@@ -377,8 +377,6 @@ def cli_install(args: ArgParams) -> None:
     queue = InstallQueue(dryRun=args.dry, force=args.force)
     for pkgName in needsInstall:
         queue.init(pkgName, recursive=not args.no_dependencies)
-    if not args.no_dependencies:
-        queue.printQueue()
     queue.validateQueue()
     queue.download()
     queue.install(skipLink=args.skip_link, linkExe=args.binaries)
@@ -1745,7 +1743,8 @@ class InstallQueue:
         self.installQueue = []  # type: list[str]  # tar file path
         self.finished = []  # type: list[tuple[str, str]]  # [(pkg, version)]
 
-    def init(self, pkgOrFile: str, *, recursive: bool) -> None:
+    def init(self, pkgOrFile: str, *, recursive: bool, quiet: bool = False) \
+            -> None:
         ''' Auto-detect input type and install from tar-file or brew online '''
         if os.path.isfile(pkgOrFile) and pkgOrFile.endswith('.tar.gz'):
             shortName = os.path.basename(pkgOrFile)
@@ -1756,14 +1755,14 @@ class InstallQueue:
             Log.error('package may not contain path-separator')
         elif recursive:
             Log.info(f'==> Gather dependencies for {pkgOrFile} ...')
-            self.addRecursive(pkgOrFile)
+            self.addRecursive(pkgOrFile, quiet=quiet)
         else:
             Log.info(f'==> Install {pkgOrFile} (ignoring dependencies) ...')
             bundle = Brew.info(pkgOrFile)
-            self.add(pkgOrFile, bundle.version, bundle.digest)
+            self.add(pkgOrFile, bundle.version, bundle.digest, quiet=quiet)
             self._primary.add(pkgOrFile)
 
-    def addRecursive(self, pkg: str) -> None:
+    def addRecursive(self, pkg: str, *, quiet: bool = False) -> None:
         ''' Recursive online search for dependencies '''
         self._primary.add(pkg)
         queue = [pkg]
@@ -1777,22 +1776,21 @@ class InstallQueue:
                 queue.extend(bundle.dependencies or [])
                 self.add(pkg, bundle.version, bundle.digest)
 
-    def add(self, pkg: str, version: str, digest: 'str|None') -> None:
+    def add(
+        self, pkg: str, version: str, digest: 'str|None', *,
+        quiet: bool = False,
+    ) -> None:
         ''' Check if specific version exists and add to download queue '''
         # skip if a specific version already exists
         if not self.force and version in LocalPackage(pkg).allVersions:
             # TODO: print already installed?
             return
+        if not quiet:
+            Log.info('  -', pkg)
         if not digest:
             self._missingDigest.append(pkg)
         else:
             self.downloadQueue.append(InstallQueue.Item(pkg, version, digest))
-
-    def printQueue(self) -> None:
-        ''' Print download Queue (if any) '''
-        if not self.downloadQueue:
-            return
-        Log.info(Txt.prettyList([x.package for x in self.downloadQueue]))
 
     def validateQueue(self) -> None:
         ''' Check if any digest is missing. If so, fail with exit code 1 '''
