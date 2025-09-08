@@ -1398,17 +1398,7 @@ class LocalPackageVersion:
             Log.error('not a brew-package directory', self.path, summary=True)
             return
 
-        for base, dirs, files in os.walk(self.path):
-            for file in files:
-                fname = os.path.join(base, file)
-                if os.path.islink(fname):
-                    Fixer.symlink(fname)
-                    continue
-                # magic number check for Mach-O
-                with open(fname, 'rb') as fp:
-                    if fp.read(4) != b'\xcf\xfa\xed\xfe':
-                        continue
-                Fixer.dylib(fname)
+        Fixer.run(self.path)
 
 
 # -----------------------------------
@@ -1882,6 +1872,18 @@ class InstallQueue:
 # -----------------------------------
 
 class Fixer:
+    @staticmethod
+    def run(path: str) -> None:
+        for base, dirs, files in os.walk(path):
+            for file in files:
+                fname = os.path.join(base, file)
+                if os.path.islink(fname):
+                    Fixer.symlink(fname)
+                    continue
+
+                if File.isMachO(fname):
+                    Fixer.dylib(fname)
+
     @staticmethod
     def symlink(fname: str) -> None:
         ''' Fix time on symlink, copy time from target link '''
@@ -2435,6 +2437,12 @@ class RubyParser:
 # -----------------------------------
 
 class File:
+    @staticmethod
+    def isMachO(fname: str) -> bool:
+        # magic number check for Mach-O
+        with open(fname, 'rb') as fp:
+            return fp.read(4) == b'\xcf\xfa\xed\xfe'
+
     @staticmethod
     def isOutdated(fname: str, maxage: int) -> bool:
         ''' Check if `fname` is older than `maxage` '''
