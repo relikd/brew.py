@@ -1882,7 +1882,7 @@ class Fixer:
                     continue
 
                 if File.isMachO(fname):
-                    Fixer.dylib(fname)
+                    Dylib(fname).fix()
 
     @staticmethod
     def symlink(fname: str) -> None:
@@ -1893,57 +1893,144 @@ class Fixer:
         mtime = os.path.getmtime(fname)
         os.utime(fname, (atime, mtime), follow_symlinks=False)
 
-    @staticmethod
-    def dylib(fname: str) -> None:
-        ''' Rewrite dylib to use relative links '''
+
+# -----------------------------------
+#  Dylib
+# -----------------------------------
+
+class Dylib:
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.atime = os.path.getatime(path)
+        self.mtime = os.path.getmtime(path)
+        # dylib specific
+        self.id = ''
+        self.signed = False
+        self.rpaths = []  # type: list[str]
+        self.dylibs = []  # type: list[str]
+        self._load()
+        # remove system dylibs with absolute URLs
+        self.dylibs = [x for x in self.dylibs if x.startswith('@')]
+
+    def _load(self) -> None:
+        ''' Run `otool` on file, parse output, write instance fields '''
+        cmd = ''
+        value = ''
+        for line in Bash.otool(self.path) + ['Load command END']:
+            line = line.strip()
+            if line.startswith('Load command '):
+                if cmd == 'LC_ID_DYLIB':
+                    self.id = value
+                elif cmd == 'LC_LOAD_DYLIB':
+                    self.dylibs.append(value)
+                elif cmd == 'LC_RPATH':
+                    self.rpaths.append(value)
+                elif cmd == 'LC_CODE_SIGNATURE':
+                    self.signed = True
+                # reset temporary variables
+                cmd = ''
+                value = ''
+            elif line.startswith('cmd '):
+                cmd = line[4:]
+            elif line.startswith('path ') or line.startswith('name '):
+                value = line[5:].split(' (offset ')[0]
+
+    @cached_property
+    def rpaths_expanded(self) -> list[str]:
+        ''' Apply _expand_path() on all `.rpaths` '''
+        return [self._expand_path(x) for x in self.rpaths]
+
+    def _expand_path(self, rpath: str) -> str:
+        ''' Replace `@@HOMEBREW_` placeholders and resolve `@loader_path` '''
+        if rpath.startswith('@loader_path'):
+            rpath = os.path.dirname(self.path) + rpath[12:]
+        elif rpath.startswith('@@HOMEBREW_PREFIX@@'):
+            rpath = Cellar.ROOT + rpath[19:]
+        elif rpath.startswith('@@HOMEBREW_CELLAR@@'):
+            rpath = Cellar.CELLAR + rpath[19:]
+
+        assert rpath.startswith('/'), f'Missing replace for {rpath}'
+        return os.path.abspath(rpath)
+
+    def fix(self) -> None:
+        ''' Rewrite dylib to use relative links (@loader_path only) '''
         # TLDR:
-        # 1) otool -L <file>  // list all linked shared libraries (exe + dylib)
-        # 2) install_name_tool -id "newRef" <file>  // only for *.dylib files
-        # 3) install_name_tool -change "oldRef" "newRef" <file>  // both types
-        # 4) codesign --verify --force --sign - <file>  // resign with no sign
-        parentDir = os.path.dirname(fname)
+        # 1) otool -l <file>  // list all linked shared libraries
+        # 2) install_name_tool -id X -delete_rpath Y ... -change Z ... <file>
+        # 3) codesign --verify --force --sign - <file>  // resign with no sign
+        args = []
+        if self.id:
+            new_id = os.path.basename(self.id)
+            if self.id != new_id:
+                args.extend(['-id', new_id])
+
+        for rpath in self.rpaths:
+            args.extend(['-delete_rpath', rpath])
+
+        for old, new in self._dylib_renames():
+            args.extend(['-change', old, new])
+
+        if args:
+            Log.info('  fix dylib', Cellar.shortPath(self.path))
+            Log.debug('    cmd:', args)
+            Bash.install_name_tool(self.path, args)
+
+            if self.signed:
+                Log.debug('  codesign')
+                Bash.codesign(self.path)
+            # restore previous date-time
+            os.utime(self.path, (self.atime, self.mtime))
+
+    def _dylib_renames(self) -> list[tuple[str, str]]:
+        ''' Iterate over all `.dylibs` and return rename changes to apply '''
+        if not self.dylibs:
+            return []
+
+        parentDir = os.path.dirname(self.path)
         repl1 = parentDir.replace(Cellar.CELLAR, '@@HOMEBREW_CELLAR@@', 1)
         repl2 = parentDir.replace(Cellar.ROOT, '@@HOMEBREW_PREFIX@@', 1)
-        assert repl1.startswith('@@HOMEBREW_CELLAR@@')  # ./cellar/pkg/version/
+        assert repl1.startswith('@@HOMEBREW_CELLAR@@'), 'must be inside CELLAR'
 
         # check if opt-link points to the same package
         _, pkgName, pkgVer, *subpath = repl1.split('/')
         opt_prefix = f'@@HOMEBREW_PREFIX@@/opt/{pkgName}/'
         repl_same = opt_prefix + '/'.join(subpath)
 
-        atime = os.path.getatime(fname)
-        mtime = os.path.getmtime(fname)
+        rv = []
+        for oldRef in self.dylibs:
+            newRef = ''
 
-        did_change = False
-        for oldRef in Bash.otool(fname):
             if oldRef.startswith('@@HOMEBREW_CELLAR@@'):
                 newRef = os.path.relpath(oldRef, repl1)
+
             elif oldRef.startswith('@@HOMEBREW_PREFIX@@'):
                 if oldRef.startswith(opt_prefix):
                     newRef = os.path.relpath(oldRef, repl_same)
                 else:
                     newRef = os.path.relpath(oldRef, repl2)
-            elif oldRef.startswith('@@'):
-                Log.warn('unhandled dylib link', oldRef, summary=True)
+
+            elif oldRef.startswith('@rpath/'):
+                assert self.rpaths, '@rpath is defined elsewhere?!'
+
+                for rpath in self.rpaths_expanded:
+                    try_rpath = oldRef.replace('@rpath', rpath)
+                    if os.path.exists(try_rpath):
+                        newRef = os.path.relpath(try_rpath, parentDir)
+                        break
+
+            elif oldRef.startswith('@loader_path/'):
+                try_path = self._expand_path(oldRef)
+                if os.path.exists(try_path):
+                    newRef = os.path.relpath(try_path, parentDir)
+
+            if not newRef or newRef.startswith('/'):
+                Log.warn('could not resolve dylib link', oldRef, summary=True)
                 continue
-            else:
-                continue  # probably fine (incl. @rpath, @executable_path)
 
             newRef = '@loader_path/' + newRef
-            if not did_change:
-                Log.info('  fix dylib', Cellar.shortPath(fname))
-            Log.debug('    OLD:', oldRef)
-            Log.debug('    NEW:', newRef)
-
-            if fname.endswith('.dylib'):
-                Bash.install_name_tool_id(newRef, fname)
-            Bash.install_name_tool_change(oldRef, newRef, fname)
-            did_change = True
-
-        if did_change:
-            Log.debug('  codesign')
-            Bash.codesign(fname)
-            os.utime(fname, (atime, mtime))
+            if oldRef != newRef:
+                rv.append((oldRef, newRef))
+        return rv
 
 
 # -----------------------------------
@@ -2602,23 +2689,13 @@ class Bash:
     @staticmethod
     def otool(fname: str) -> list[str]:
         ''' Read shared library references '''
-        rv = shell.run(['otool', '-L', fname], capture_output=True)
-        # TODO: can lib paths contain space?
-        return [line.split()[0].decode('utf8')
-                for line in rv.stdout.split(b'\n')
-                if line.startswith(b'\t')]
+        rv = shell.run(['otool', '-l', fname], capture_output=True)
+        return rv.stdout.decode('utf8').split('\n')
 
     @staticmethod
-    def install_name_tool_id(newRef: str, fname: str) -> None:
-        ''' Set definitions (needed for dylib) '''
-        shell.run(['install_name_tool', '-id', newRef, fname],
-                  stderr=shell.DEVNULL)
-
-    @staticmethod
-    def install_name_tool_change(oldRef: str, newRef: str, fname: str) -> None:
-        ''' Change library reference '''
-        shell.run(['install_name_tool', '-change', oldRef, newRef, fname],
-                  stderr=shell.DEVNULL)
+    def install_name_tool(fname: str, args: list[str]) -> None:
+        ''' Modify dylib structure '''
+        shell.run(['install_name_tool'] + args + [fname], stderr=shell.DEVNULL)
 
     @staticmethod
     def codesign(fname: str) -> None:
