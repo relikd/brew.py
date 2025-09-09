@@ -1920,20 +1920,18 @@ class InstallQueue:
 class Fixer:
     @staticmethod
     def run(path: str) -> None:
-        for base, dirs, files in os.walk(path):
-            for file in files:
-                fname = os.path.join(base, file)
-                if os.path.islink(fname):
-                    Fixer.symlink(fname)
-                    continue
+        for fname in File.recursiveFiles(path):
+            if os.path.islink(fname):
+                Fixer.symlink(fname)
+                continue
 
-                if File.isMachO(fname):
-                    Dylib(fname).fix()
-                elif File.isBinary(fname):
-                    pass  # skip other binary (.a, .class, .png, ...)
-                else:
-                    # replace all @@homebrew@@ placeholders
-                    Fixer.inreplace(fname)
+            if File.isMachO(fname):
+                Dylib(fname).fix()
+            elif File.isBinary(fname):
+                pass  # skip other binary (.a, .class, .png, ...)
+            else:
+                # replace all @@homebrew@@ placeholders
+                Fixer.inreplace(fname)
 
     @staticmethod
     def symlink(fname: str) -> None:
@@ -2697,6 +2695,15 @@ class File:
         ''' Update access time of file (or create new file) '''
         with open(fname, 'a'):
             os.utime(fname, None)
+
+    @staticmethod
+    def recursiveFiles(path: str) -> Iterator[str]:
+        ''' yield only files from `os.walk(path)` '''
+        if os.path.isdir(path):
+            for base, _, files in os.walk(path):
+                for file in files:
+                    if file != '.DS_Store':
+                        yield os.path.join(base, file)
 
     @staticmethod
     def folderSize(path: str) -> tuple[int, int]:
