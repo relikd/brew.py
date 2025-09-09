@@ -23,8 +23,7 @@ Some packages use hard-coded path prefixes (e.g. Python).
 For these, you need to create a symlink:
 
 ```sh
-sudo mkdir -p /opt/homebrew
-sudo ln -s $BREW_PY_CELLAR/cellar /opt/homebrew/Cellar
+sudo ln -s $BREW_PY_CELLAR /opt/homebrew
 ```
 
 

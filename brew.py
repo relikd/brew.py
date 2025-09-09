@@ -1383,7 +1383,7 @@ class LocalPackageVersion:
 
     @cached_property
     def rubyPath(self) -> str:
-        ''' Returns `@/cellar/<pkg>/<version>/.brew/<pkg>.rb` '''
+        ''' Returns `@/Cellar/<pkg>/<version>/.brew/<pkg>.rb` '''
         return os.path.join(self.path, '.brew', self.pkg.name + '.rb')
 
     @cached_property
@@ -1405,7 +1405,7 @@ class LocalPackageVersion:
 
     @cached_property
     def _gatherBinaries(self) -> list[str]:
-        ''' Binary paths in `cellar/<pkg>/<version>/bin/...` '''
+        ''' Binary paths in `@/Cellar/<pkg>/<version>/bin/...` '''
         path = os.path.join(self.path, 'bin')
         if os.path.isdir(path):
             return [x.path for x in os.scandir(path) if os.access(x, os.X_OK)]
@@ -1570,7 +1570,7 @@ class Cellar:
     ROOT = Env.CELLAR_PATH
     BIN = os.path.join(ROOT, 'bin')
     CACHE = os.path.join(ROOT, 'cache')
-    CELLAR = os.path.join(ROOT, 'cellar')
+    CELLAR = os.path.join(ROOT, 'Cellar')
     DOWNLOAD = os.path.join(ROOT, 'download')
     OPT = os.path.join(ROOT, 'opt')
 
@@ -1626,7 +1626,7 @@ class Cellar:
 
     @staticmethod
     def installPath(pkg: str) -> str:
-        ''' Returns `@/cellar/<pkg>` '''
+        ''' Returns `@/Cellar/<pkg>` '''
         return os.path.join(Cellar.CELLAR, pkg)
 
     # Version handling
@@ -1686,7 +1686,7 @@ class TarPackage:
         self.fname = fname
 
     def extract(self, *, dryRun: bool = False) -> 'PkgVer|None':
-        ''' Extract tar file into `@/cellar/...` '''
+        ''' Extract tar file into `@/Cellar/...` '''
         shortPath = Cellar.shortPath(self.fname)
         if shortPath.startswith('..'):  # if path outside of cellar
             shortPath = os.path.basename(self.fname)
