@@ -189,6 +189,8 @@ def cli_list(args: ArgParams) -> None:
         packages = [x for x in packages if len(x.allVersions) > 1]
     if args.pinned:
         packages = [x for x in packages if x.pinned]
+    if args.primary:
+        packages = [x for x in packages if x.primary]
     if not packages:
         Log.main('no package found.')
         return
@@ -677,10 +679,12 @@ def parseArgs() -> ArgParams:
     cmd.arg_bool('-1', help='''
         Force output to be one entry per line.
         This is the default when output is not to a terminal.''')
+    cmd.arg_bool('--primary', help='''
+        Only show packages which were requested by user, no dependencies.''')
     cmd.arg_bool('--multiple', help='''
         Only show packages with multiple versions installed''')
     cmd.arg_bool('--pinned', help='''
-        List only pinned packages. See also pin, unpin.''')
+        Only show pinned packages. See also pin, unpin.''')
 
     # outdated
     cmd = cli.subcommand('outdated', cli_outdated, aliases=['old'])
