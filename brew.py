@@ -1939,6 +1939,8 @@ class Fixer:
 
                 if File.isMachO(fname):
                     Dylib(fname).fix()
+                elif File.isBinary(fname):
+                    pass  # skip other binary (.a, .class, .png, ...)
                 else:
                     # replace all @@homebrew@@ placeholders
                     Fixer.inreplace(fname)
@@ -2676,6 +2678,11 @@ class File:
         # magic number check for Mach-O
         with open(fname, 'rb') as fp:
             return fp.read(4) == b'\xcf\xfa\xed\xfe'
+
+    @staticmethod
+    def isBinary(fname: str) -> bool:
+        with open(fname, 'rb') as fp:
+            return b'\0' in fp.read(4096)
 
     @staticmethod
     def isOutdated(fname: str, maxage: int) -> bool:
