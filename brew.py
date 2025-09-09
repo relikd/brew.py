@@ -1883,6 +1883,9 @@ class Fixer:
 
                 if File.isMachO(fname):
                     Dylib(fname).fix()
+                else:
+                    # replace all @@homebrew@@ placeholders
+                    Fixer.inreplace(fname)
 
     @staticmethod
     def symlink(fname: str) -> None:
@@ -1892,6 +1895,94 @@ class Fixer:
         atime = os.path.getatime(fname)
         mtime = os.path.getmtime(fname)
         os.utime(fname, (atime, mtime), follow_symlinks=False)
+
+    @staticmethod
+    def inreplace(fname: str) -> None:
+        # check if file contains any homebrew prefix placeholders
+        matches = Fixer._read_placeholders_location(fname)
+        if not matches:
+            return
+
+        Log.debug('  replace placeholders in', fname)
+        # check that we dont miss any placeholder
+        for pos, match in matches:
+            if match not in Fixer.INREPLACE_DICT:
+                Log.error('missed placeholder', match, 'in', fname,
+                          summary=True)
+
+        # if yes, replace all placeholders
+        tmp_tgt = fname + '.brew-repl'
+        Fixer._write_placeholders_replace(matches, fname, tmp_tgt)
+
+        # replace original file and restore file flags
+        shutil.copystat(fname, tmp_tgt)
+        st = os.stat(fname)
+        os.chown(tmp_tgt, st.st_uid, st.st_gid)
+        os.rename(tmp_tgt, fname)
+
+    PlaceholderMatches = list[tuple[int, bytes]]
+
+    @staticmethod
+    def _read_placeholders_location(fname: str) -> PlaceholderMatches:
+        ''' Returns list of `(pos, b'@@PLACEHOLDER@@')` '''
+        CHUNK_SIZE = 4096
+        # file_size = 0
+        needle = b'@@HOMEBREW_'
+        rv = []
+        with open(fname, 'rb') as fp:
+            fp.seek(0)
+            while True:
+                chunk = fp.read(CHUNK_SIZE)
+                if len(chunk) == 0:
+                    # file_size = fp.tell()
+                    break
+
+                if needle not in chunk:
+                    continue
+
+                idx = chunk.index(needle)
+                if idx > CHUNK_SIZE - 30:
+                    fp.seek(-30, 1)  # relative to current pos
+                    continue
+
+                suffix = chunk[idx + 2:idx + 30]
+                if b'@@' in suffix:
+                    end = idx + 2 + suffix.index(b'@@') + 2
+                    fp_idx = fp.tell() - len(chunk) + idx
+                    rv.append((fp_idx, chunk[idx:end]))
+                    fp.seek(- len(chunk) + end, 1)  # relative to current pos
+                    continue
+
+                fp.seek(- len(chunk) + idx + len(needle), 1)
+        return rv
+
+    @staticmethod
+    def _write_placeholders_replace(
+        matches: PlaceholderMatches, src: str, dst: str
+    ) -> None:
+        ''' Apply changes to new file by replacing placeholders with value '''
+        CHUNK_SIZE = 4096
+        # this is easier than adding a special case to read until EOF
+        matches.append((99 ** 9, b''))
+        prev = 0
+        with open(src, 'rb') as fpr:
+            with open(dst, 'wb') as fpw:
+                for pos, match in matches:
+                    while prev + CHUNK_SIZE < pos:
+                        change = fpw.write(fpr.read(CHUNK_SIZE))
+                        if change == 0:
+                            return
+                        prev += change
+                    fpw.write(fpr.read(pos - prev))
+                    fpr.seek(pos + len(match))
+                    prev = fpr.tell()
+                    fpw.write(Fixer.INREPLACE_DICT[match])
+
+    INREPLACE_DICT = {
+        b'@@HOMEBREW_PREFIX@@': Cellar.ROOT.encode('utf8'),
+        b'@@HOMEBREW_CELLAR@@': Cellar.CELLAR.encode('utf8'),
+        b'@@HOMEBREW_LIBRARY@@': Cellar.ROOT.encode('utf8') + b'/Library',
+    }
 
 
 # -----------------------------------

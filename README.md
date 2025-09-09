@@ -12,10 +12,19 @@ see [usage](#usage) below.
 Copy `brew.py` to anywhere, where it can be found by your shell.
 Or add a new path to your `$PATH`.
 
-In your shell config (e.g., `.zprofile`) add
+In your shell config (e.g., `.zprofile` or `.bash_profile`) add
 
 ```sh
 export BREW_PY_CELLAR=$HOME/any/path/you/like
+```
+
+
+Some packages use hard-coded path prefixes (e.g. Python).
+For these, you need to create a symlink:
+
+```sh
+sudo mkdir -p /opt/homebrew
+sudo ln -s $BREW_PY_CELLAR/cellar /opt/homebrew/Cellar
 ```
 
 
