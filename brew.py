@@ -568,7 +568,7 @@ def cli_cleanup(args: ArgParams) -> None:
 
     # should never happen but just in case, remove symlinks which point nowhere
     Log.info('==> Removing dead links')
-    links = SymLinks.inCellar(args.packages, opt=True, bin=True)
+    links = SymLinks.inCellar(args.packages, opt=True, bin=True, share=True)
 
     for link in links:
         if not os.path.exists(link.target):
@@ -1175,7 +1175,7 @@ class SymLinks:
                     yield SymLinks.Link(filePath, real, raw)
 
     @staticmethod
-    def forInstall(pkgPath: str, *, opt: bool, bin: bool) \
+    def forInstall(pkgPath: str, *, opt: bool, bin: bool, share: bool) \
             -> list[Link]:
         '''
         Collection of symlinks which can be linked into Cellar.
@@ -1201,14 +1201,18 @@ class SymLinks:
                 if os.access(exe, os.X_OK):  # executable flag
                     _fn(Cellar.BIN, exe.name)
 
+        if share:
+            for fname in File.recursiveFiles(os.path.join(pkgPath, 'share')):
+                _fn(Cellar.SHARE, fname.removeprefix(pkgPath + '/share/'))
+
         return rv
 
     @staticmethod
     def inCellar(
-        pkgs: 'list[str]|str' = '', *, opt: bool, bin: bool,
+        pkgs: 'list[str]|str' = '', *, opt: bool, bin: bool, share: bool,
     ) -> list[Link]:
         '''
-        Return existing symlinks in `@/opt`, `@/bin`.
+        Return existing symlinks in `@/opt`, `@/bin`, and/or `@/share`.
         Optionally, filter links by package name.
         '''
         rv = []  # type: list[SymLinks.Link]
@@ -1216,6 +1220,8 @@ class SymLinks:
             rv += SymLinks._allInDir(Cellar.OPT)
         if bin:
             rv += SymLinks._allInDir(Cellar.BIN)
+        if share:
+            rv += SymLinks._allInDir(Cellar.SHARE)
 
         if not pkgs:
             return rv
@@ -1355,7 +1361,7 @@ class LocalPackage:
         ''' Read `@/opt/<pkg>` link. `None` if non-exist or not link to pkg '''
         # TODO: should opt-links have "@version" suffix or not?
         #       if no, fix-dylib needs adjustments
-        lnk = SymLinks.inCellar(self.name, opt=True, bin=False)[0]
+        lnk = SymLinks.inCellar(self.name, opt=True, bin=False, share=False)[0]
         if lnk and not lnk.target.startswith(self.path + '/'):
             return None
         return lnk
@@ -1363,7 +1369,7 @@ class LocalPackage:
     @cached_property
     def binLinks(self) -> list[SymLinks.Link]:
         ''' List of `@/bin/...` links that match `<pkg>` destination '''
-        return SymLinks.inCellar(self.name, opt=False, bin=True)
+        return SymLinks.inCellar(self.name, opt=False, bin=True, share=False)
 
     def unlink(
         self, *, unlinkOpt: bool, unlinkBin: bool,
@@ -1371,7 +1377,7 @@ class LocalPackage:
     ) -> list[SymLinks.Link]:
         ''' remove symlinks `@/opt/<pkg>` and `@/bin/...` matching target '''
         rv = SymLinks.inCellar(
-            self.name, opt=unlinkOpt, bin=unlinkBin)
+            self.name, opt=unlinkOpt, bin=unlinkBin, share=unlinkBin)
 
         for lnk in rv:
             if not quiet:
@@ -1449,7 +1455,7 @@ class LocalPackageVersion:
             raise RuntimeError('Package not installed')
 
         for link in SymLinks.forInstall(
-                self.path, opt=linkOpt, bin=linkBin):
+                self.path, opt=linkOpt, bin=linkBin, share=linkBin):
             short = Cellar.shortPath(link.path)
             if os.path.islink(link.path) or os.path.exists(link.path):
                 Log.warn(f'skip already existing link: {short}', summary=True)
@@ -1457,6 +1463,7 @@ class LocalPackageVersion:
                 if not quiet:
                     Log.info(f'  link {short} -> {link.raw}')
                 if not dryRun:
+                    os.makedirs(os.path.dirname(link.path), exist_ok=True)
                     os.symlink(link.raw, link.path)
 
         if not dryRun:
@@ -1590,6 +1597,7 @@ class Cellar:
     CELLAR = os.path.join(ROOT, 'Cellar')
     DOWNLOAD = os.path.join(ROOT, 'download')
     OPT = os.path.join(ROOT, 'opt')
+    SHARE = os.path.join(ROOT, 'share')
 
     @staticmethod
     def init() -> None:
@@ -1599,7 +1607,7 @@ class Cellar:
             exit(42)
 
         for x in (Cellar.BIN, Cellar.CACHE, Cellar.CELLAR, Cellar.DOWNLOAD,
-                  Cellar.OPT):
+                  Cellar.OPT, Cellar.SHARE):
             os.makedirs(x, exist_ok=True)
 
         Config.load(os.path.join(Cellar.ROOT, 'config.ini'))  # after makedirs

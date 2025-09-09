@@ -15,7 +15,10 @@ Or add a new path to your `$PATH`.
 In your shell config (e.g., `.zprofile` or `.bash_profile`) add
 
 ```sh
+# needed to run
 export BREW_PY_CELLAR=$HOME/any/path/you/like
+# optional, make binary available in shell
+export PATH=$PATH:$BREW_PY_CELLAR/bin
 ```
 
 
@@ -24,6 +27,16 @@ For these, you need to create a symlink:
 
 ```sh
 sudo ln -s $BREW_PY_CELLAR /opt/homebrew
+```
+
+
+And for auto-completion (zsh) add this to your `.zshrc`:
+
+```sh
+# shell-completion in zsh
+if [ -d "$BREW_PY_CELLAR/share/zsh/site-functions" ]; then
+    fpath=($BREW_PY_CELLAR/share/zsh/site-functions $fpath)
+fi
 ```
 
 
