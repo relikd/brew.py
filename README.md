@@ -105,6 +105,8 @@ positional arguments:
                         arguments are specified, only do this for the given
                         packages. Removes all downloads older than 21 days
                         (see config.ini).
+    export              Take binary and all referenced libs to another folder
+                        (relink all dylib)
 
 optional arguments:
   -h, --help            show this help message and exit

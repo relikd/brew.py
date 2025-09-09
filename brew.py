@@ -577,6 +577,56 @@ def cli_cleanup(args: ArgParams) -> None:
     Log.main(Txt.freedDiskSpace(total_savings, dryRun=args.dry))
 
 
+def cli_export(args: ArgParams) -> None:
+    '''
+    Take binary and all referenced libs to another folder (relink all dylib)
+    '''
+    queue = [x for x in args.binaries]
+    done = []
+    while queue:
+        src = os.path.realpath(queue.pop(0))
+
+        if not os.path.exists(src):
+            Log.error('file not found', src)
+            continue
+
+        isLib = src.split('.')[-1] in ('dylib', 'bundle', 'so')
+        tgtDir = os.path.join(args.outdir, 'lib') if isLib else args.outdir
+        tgt = os.path.join(tgtDir, os.path.basename(src))
+
+        if os.path.exists(tgt) and not args.force:
+            Log.info('[skip] exists', tgt)
+            continue
+
+        os.makedirs(tgtDir, exist_ok=True)
+        Log.info('copy', tgt)
+        shutil.copy2(src, tgt)
+
+        # detect linked libs and collect changes
+        cmd_args = []  # type: list[str]
+        exe = Dylib(src)
+        for oldRef in exe.dylibs:
+            lnkRef = exe.expand_path(oldRef)
+            assert os.path.exists(lnkRef)
+            lnkTgt = os.path.realpath(lnkRef)
+            if lnkTgt not in done:
+                queue.append(lnkTgt)
+                done.append(lnkTgt)
+            # link only goes one-way, a lib cannot link back to binary
+            newRef = '@loader_path/' + ('' if isLib else 'lib/') \
+                + os.path.basename(lnkTgt)
+            if oldRef != newRef:
+                cmd_args.extend(['-change', oldRef, newRef])
+
+        # fix dylib
+        if cmd_args:
+            Log.debug('  relink dylib:', cmd_args)
+            Bash.install_name_tool(tgt, cmd_args)
+            Log.debug('  codesign')
+            Bash.codesign(tgt)
+            os.utime(tgt, (os.path.getatime(src), os.path.getmtime(src)))
+
+
 # -----------------------------------
 #  CLI
 # -----------------------------------
@@ -768,6 +818,12 @@ def parseArgs() -> ArgParams:
         Remove all cache files and downloads older than specified days''')
     cmd.arg_bool('-n', '--dry-run', dest='dry', help='''
         Show what would be removed, but do not actually remove anything''')
+
+    # export
+    cmd = cli.subcommand('export', cli_export)
+    cmd.arg('binaries', nargs='+', help='Binary files to be exported')
+    cmd.arg('outdir', help='Export output directory')
+    cmd.arg_bool('-f', '--force', help='Overwrite existing files in outdir')
 
     return cli.parse()
 
@@ -2028,10 +2084,10 @@ class Dylib:
 
     @cached_property
     def rpaths_expanded(self) -> list[str]:
-        ''' Apply _expand_path() on all `.rpaths` '''
-        return [self._expand_path(x) for x in self.rpaths]
+        ''' Apply expand_path() on all `.rpaths` '''
+        return [self.expand_path(x) for x in self.rpaths]
 
-    def _expand_path(self, rpath: str) -> str:
+    def expand_path(self, rpath: str) -> str:
         ''' Replace `@@HOMEBREW_` placeholders and resolve `@loader_path` '''
         if rpath.startswith('@loader_path'):
             rpath = os.path.dirname(self.path) + rpath[12:]
@@ -2051,7 +2107,7 @@ class Dylib:
         # 3) codesign --verify --force --sign - <file>  // resign with no sign
         args = []
         if self.id:
-            new_id = os.path.basename(self.id)
+            new_id = '@loader_path/' + os.path.basename(self.id)
             if self.id != new_id:
                 args.extend(['-id', new_id])
 
@@ -2110,7 +2166,7 @@ class Dylib:
                         break
 
             elif oldRef.startswith('@loader_path/'):
-                try_path = self._expand_path(oldRef)
+                try_path = self.expand_path(oldRef)
                 if os.path.exists(try_path):
                     newRef = os.path.relpath(try_path, parentDir)
 
