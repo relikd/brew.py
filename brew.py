@@ -390,6 +390,8 @@ def cli_uninstall(args: ArgParams) -> None:
     queue = UninstallQueue()
     queue.collect(args.packages, args.ignore, leaves=args.leaves,
                   ignoreDependencies=args.no_dependencies)
+    if not queue.uninstallQueue:
+        return
     if not args.force:
         # hard-fail check. no direct dependencies
         queue.validateQueue()
@@ -2209,7 +2211,11 @@ class UninstallQueue:
         will be skipped and remains on the system.
         '''
         depTree = Cellar.getDependencyTree()
-        depTree.forward.assertExist(deletePkgs + hiddenPkgs)
+        depTree.forward.assertExist(hiddenPkgs)
+
+        for unknown in depTree.forward.missing(deletePkgs):
+            Log.error('unknown package:', unknown)
+            deletePkgs.remove(unknown)
 
         def getDeps(pkg: str) -> set[str]:
             if leaves:
