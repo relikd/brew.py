@@ -1901,7 +1901,7 @@ class InstallQueue:
                     vpkg.link(linkOpt=True, linkBin=False)
                 continue
 
-            if vpkg.isKegOnly:
+            if vpkg.isKegOnly and linkBin:
                 linkBin = False
                 Log.warn('keg-only, must link manually ({}, {})'.format(
                     pkg.name, vpkg.version), summary=True)
