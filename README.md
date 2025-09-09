@@ -27,6 +27,12 @@ sudo ln -s $BREW_PY_CELLAR /opt/homebrew
 ```
 
 
+## Config
+
+There are a few configuration options to modify brew.py behavior.
+For default values and configuration options, see [config.ini](config.ini).
+
+
 ## FAQ
 
 ### Why this project?

@@ -971,41 +971,25 @@ class Config:
 
     @staticmethod
     def load(fname: str) -> None:
-        if not os.path.exists(fname):
-            with open(fname, 'w') as fp:
-                fp.write('''
-[install]
-; whether install should link binaries of main package (user-installed)
-link_bin_primary = yes  ; default: yes
-; whether install should link binaries of dependencies
-link_bin_dependency = no  ; default: no
-
-[cleanup]
-; unit: s|m|h|d (secs, mins, hours, days)
-download = 21d  ; default: 21d
-cache = 5d  ; default: 5d
-auth = 365d  ; default: 365d
-''')
         ini = IniFile(inline_comment_prefixes=(';', '#'))
         ini.read(fname)
 
         def timed(value: str) -> int:
             unit = value[-1].lower()
-            mul = {'s': 1, 'm': 60, 'h': 60 * 60, 'd': 24 * 60 * 60}.get(unit)
+            mul = {'s': 1, 'm': 60, 'h': 3600, 'd': 86_400}.get(unit)
             if not mul:
                 raise AttributeError(f'Unkown time unit "{value}" in config')
             return int(value[:-1]) * mul
 
-        sec = ini['install']
         Config.INSTALL = Config.Install(
-            LINK_BIN_PRIM=sec.getboolean('link_bin_primary', fallback=True),
-            LINK_BIN_DEPS=sec.getboolean('link_bin_dependency', fallback=False)
+            ini.getboolean('install', 'link_bin_primary', fallback=True),
+            ini.getboolean('install', 'link_bin_dependency', fallback=False),
         )
-        sec = ini['cleanup']
+
         Config.CLEANUP = Config.Cleanup(
-            DOWNLOAD=timed(sec.get('download', '21d')),
-            CACHE=timed(sec.get('cache', '5d')),
-            AUTH=timed(sec.get('auth', 'never')),
+            timed(ini.get('cleanup', 'download', fallback='21d')),
+            timed(ini.get('cleanup', 'cache', fallback='5d')),
+            timed(ini.get('cleanup', 'auth', fallback='365d')),
         )
 
 
