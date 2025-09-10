@@ -30,13 +30,13 @@ sudo ln -s $BREW_PY_CELLAR /opt/homebrew
 ```
 
 
-And for auto-completion (zsh) add this to your `.zshrc`:
+And for auto-completion (zsh) add this to your `.zshrc` (before `compinit`):
 
 ```sh
-# shell-completion in zsh
-if [ -d "$BREW_PY_CELLAR/share/zsh/site-functions" ]; then
-    fpath=($BREW_PY_CELLAR/share/zsh/site-functions $fpath)
-fi
+# brew.py zsh auto-complete
+fpath=($BREW_PY_CELLAR/share/zsh/site-functions $fpath)
+# if not defined already:
+autoload -Uz compinit && compinit
 ```
 
 
