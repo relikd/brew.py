@@ -455,6 +455,7 @@ def cli_unlink(args: ArgParams) -> None:
 
     # perform unlink
     pkg.unlink(unlinkOpt=not args.bin, unlinkBin=True, dryRun=args.dry)
+    File.cleanupEmptyDirs(Cellar.SHARE)
     Log.main('==> Unlinked', 'binaries from' if args.bin else '', prev)
 
 
@@ -505,6 +506,7 @@ def cli_toggle(args: ArgParams) -> None:
 
     for prev in allVersions:
         prev.unlink(unlinkOpt=False, unlinkBin=True)
+        File.cleanupEmptyDirs(Cellar.SHARE)
 
     if isActive:
         Log.info('==> disabled', pkg.name)
@@ -575,6 +577,7 @@ def cli_cleanup(args: ArgParams) -> None:
             total_savings += File.remove(link.path, dryRun=args.dry)
 
     Log.main(Txt.freedDiskSpace(total_savings, dryRun=args.dry))
+    File.cleanupEmptyDirs(Cellar.SHARE)
 
 
 def cli_export(args: ArgParams) -> None:
@@ -2332,6 +2335,8 @@ class UninstallQueue:
                 print()
                 print('The following packages will NOT be removed:')
                 Utils.printInColumns(sorted(self.skips))
+        else:
+            File.cleanupEmptyDirs(Cellar.SHARE)
 
 
 # -----------------------------------
@@ -2735,6 +2740,18 @@ class File:
                 for file in files:
                     if file != '.DS_Store':
                         yield os.path.join(base, file)
+
+    @staticmethod
+    def cleanupEmptyDirs(path: str) -> None:
+        ''' Delete all empty directories (bottom-up) '''
+        for base, dirs, files in os.walk(path, topdown=False):
+            if files == ['.DS_Store']:  # rm only if it is the last remaining
+                os.remove(os.path.join(base, '.DS_Store'))
+            for d in dirs:
+                try:
+                    os.rmdir(os.path.join(base, d))
+                except OSError:
+                    pass
 
     @staticmethod
     def folderSize(path: str) -> tuple[int, int]:
